@@ -1,0 +1,184 @@
+{
+  "name": "YouTube Title, Description & Thumbnail Extractor",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "sheet",
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Manual Trigger').item.json.spreadsheetId }}",
+          "mode": "expression"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Sheet1",
+          "mode": "name"
+        },
+        "range": "A:E",
+        "keyRow": 1,
+        "dataStartRow": 2
+      },
+      "id": "read-sheet",
+      "name": "Read Google Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [400, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract video ID and prepare for processing\nconst items = [];\n\nfor (const item of $input.all()) {\n  const youtubeUrl = item.json['YouTube URL'];\n  const status = item.json['Status'];\n  \n  // Skip if already processed\n  if (status === 'Done') {\n    continue;\n  }\n  \n  let videoId = null;\n  \n  if (youtubeUrl) {\n    // Extract video ID from various YouTube URL formats\n    const patterns = [\n      /(?:youtube\\.com\\/watch\\?v=|youtu\\.be\\/|youtube\\.com\\/embed\\/)([^&\\n?#]+)/,\n      /^([a-zA-Z0-9_-]{11})$/ // Direct video ID\n    ];\n    \n    for (const pattern of patterns) {\n      const match = youtubeUrl.match(pattern);\n      if (match) {\n        videoId = match[1];\n        break;\n      }\n    }\n  }\n  \n  if (videoId) {\n    items.push({\n      json: {\n        ...item.json,\n        videoId: videoId,\n        rowIndex: item.json.__rowIndex || items.length + 2\n      }\n    });\n  }\n}\n\nreturn items;"
+      },
+      "id": "extract-video-id",
+      "name": "Extract Video ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [580, 300]
+    },
+    {
+      "parameters": {
+        "url": "=https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={{ $json.videoId }}&format=json",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "get-video-data",
+      "name": "Get Video Data (oEmbed)",
+      "type": "n8n-nodes-base.httpRequest", 
+      "typeVersion": 4.1,
+      "position": [760, 300],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process video data and extract title, description, and thumbnail\nconst originalItem = $('Extract Video ID').item.json;\n\n// Get oEmbed data safely\nlet oembedData = null;\ntry {\n  const oembedNode = $('Get Video Data (oEmbed)');\n  oembedData = oembedNode?.item?.json;\n} catch (error) {\n  console.log('Could not get oEmbed data:', error.message);\n}\n\n// Extract title, description, and thumbnail URL\nlet title = `Video ${originalItem.videoId}`;\nlet description = 'Description not available';\nlet thumbnail = '';\n\nif (oembedData && !oembedData.error && oembedData.title) {\n  title = oembedData.title;\n  \n  // YouTube oEmbed doesn't provide description, so we'll use the title as content idea\n  description = `Video idea based on title: ${oembedData.title}`;\n  \n  // If there's additional info, use it\n  if (oembedData.author_name) {\n    description += ` | Channel: ${oembedData.author_name}`;\n  }\n  \n  // Generate thumbnail URL from video ID\n  thumbnail = `https://img.youtube.com/vi/${originalItem.videoId}/maxresdefault.jpg`;\n}\n\nreturn [{\n  json: {\n    rowIndex: originalItem.rowIndex,\n    YouTubeURL: originalItem['YouTube URL'],\n    Title: title,\n    Description: description,\n    Thumbnail: thumbnail,\n    Status: 'Done',\n    processedAt: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "process-video-data",
+      "name": "Process Video Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [940, 300]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "sheet",
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Manual Trigger').item.json.spreadsheetId }}",
+          "mode": "expression"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Sheet1",
+          "mode": "name"
+        },
+        "range": "={{ 'B' + $json.rowIndex + ':E' + $json.rowIndex }}",
+        "keyRow": 1,
+        "dataMode": "define",
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "Title",
+              "fieldValue": "={{ $json.Title }}"
+            },
+            {
+              "column": "Description",
+              "fieldValue": "={{ $json.Description }}"
+            },
+            {
+              "column": "Thumbnail",
+              "fieldValue": "={{ $json.Thumbnail }}"
+            },
+            {
+              "column": "Status",
+              "fieldValue": "={{ $json.Status }}"
+            }
+          ]
+        }
+      },
+      "id": "update-sheet",
+      "name": "Update Google Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [1120, 300]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Read Google Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Google Sheet": {
+      "main": [
+        [
+          {
+            "node": "Extract Video ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Video ID": {
+      "main": [
+        [
+          {
+            "node": "Get Video Data (oEmbed)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Video Data (oEmbed)": {
+      "main": [
+        [
+          {
+            "node": "Process Video Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Video Data": {
+      "main": [
+        [
+          {
+            "node": "Update Google Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "versionId": "1"
+}

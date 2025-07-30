@@ -1,0 +1,151 @@
+{
+  "name": "Sample HTTP Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "url": "https://jsonplaceholder.typicode.com/posts/1",
+        "options": {}
+      },
+      "id": "63b1c7e7-7b5a-4c3e-9a2d-1f8e6d4b3c2a",
+      "name": "HTTP Request",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        820,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process the HTTP response data\nconst data = $input.first().json;\n\nreturn {\n  id: data.id,\n  title: data.title.toUpperCase(),\n  body: data.body,\n  processedAt: new Date().toISOString(),\n  wordCount: data.body.split(' ').length\n};"
+      },
+      "id": "a4f2b8d1-3e5c-4a6b-9c7d-2e1f8a9b6c3d",
+      "name": "Process Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1020,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c7a8b9d0-1e2f-3a4b-5c6d-7e8f9a0b1c2d",
+              "leftValue": "={{ $json.wordCount }}",
+              "rightValue": 10,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b5e3c6f9-2a1d-4b8e-7c9f-0a3d6b8e1c4f",
+      "name": "Check Word Count",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1220,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "log",
+        "message": "=Long post processed: {{ $json.title }}"
+      },
+      "id": "d8f1a4b7-5c2e-9a6d-3b8f-1c4e7a0d9b2f",
+      "name": "Log Long Posts",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1420,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "log",
+        "message": "=Short post processed: {{ $json.title }}"
+      },
+      "id": "e9a2b5c8-6d3f-0a7e-4c9b-2f5a8b1e6d9c",
+      "name": "Log Short Posts",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1420,
+        320
+      ]
+    }
+  ],
+  "connections": {
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Process Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Data": {
+      "main": [
+        [
+          {
+            "node": "Check Word Count",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Word Count": {
+      "main": [
+        [
+          {
+            "node": "Log Long Posts",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Short Posts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z",
+      "id": "sample-workflow",
+      "name": "Sample"
+    }
+  ],
+  "triggerCount": 0,
+  "updatedAt": "2024-01-01T00:00:00.000Z",
+  "versionId": "1"
+}

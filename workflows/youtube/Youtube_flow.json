@@ -1,5 +1,5 @@
 {
-  "name": "YouTube Title, Description & Thumbnail Extractor",
+  "name": "YouTube Loop Processor - Until All Rows Done",
   "nodes": [
     {
       "parameters": {},
@@ -16,12 +16,12 @@
         "operation": "read",
         "documentId": {
           "__rl": true,
-          "value": "={{ $('Manual Trigger').item.json.spreadsheetId }}",
-          "mode": "expression"
+          "value": "1q7n6-F7Ji2Vz6U_tS9f7z9hxnPx1bucOeNIO4S5-qZg",
+          "mode": "id"
         },
         "sheetName": {
           "__rl": true,
-          "value": "Sheet1",
+          "value": "Video",
           "mode": "name"
         },
         "range": "A:E",
@@ -36,13 +36,42 @@
     },
     {
       "parameters": {
-        "jsCode": "// Extract video ID and prepare for processing\nconst items = [];\n\nfor (const item of $input.all()) {\n  const youtubeUrl = item.json['YouTube URL'];\n  const status = item.json['Status'];\n  \n  // Skip if already processed\n  if (status === 'Done') {\n    continue;\n  }\n  \n  let videoId = null;\n  \n  if (youtubeUrl) {\n    // Extract video ID from various YouTube URL formats\n    const patterns = [\n      /(?:youtube\\.com\\/watch\\?v=|youtu\\.be\\/|youtube\\.com\\/embed\\/)([^&\\n?#]+)/,\n      /^([a-zA-Z0-9_-]{11})$/ // Direct video ID\n    ];\n    \n    for (const pattern of patterns) {\n      const match = youtubeUrl.match(pattern);\n      if (match) {\n        videoId = match[1];\n        break;\n      }\n    }\n  }\n  \n  if (videoId) {\n    items.push({\n      json: {\n        ...item.json,\n        videoId: videoId,\n        rowIndex: item.json.__rowIndex || items.length + 2\n      }\n    });\n  }\n}\n\nreturn items;"
+        "jsCode": "// Extract video ID and prepare for processing\nconst items = [];\nlet todoCount = 0;\n\n// Count all items that need processing\nfor (const item of $input.all()) {\n  const status = item.json['Status'];\n  if (status !== 'Done') {\n    todoCount++;\n  }\n}\n\n// Find first item to process\nfor (const item of $input.all()) {\n  const youtubeUrl = item.json['YouTube URL'];\n  const status = item.json['Status'];\n  \n  // Skip if already processed\n  if (status === 'Done') {\n    continue;\n  }\n  \n  let videoId = null;\n  \n  if (youtubeUrl) {\n    // Extract video ID from various YouTube URL formats\n    const patterns = [\n      /(?:youtube\\.com\\/watch\\?v=|youtu\\.be\\/|youtube\\.com\\/embed\\/)([^&\\n?#]+)/,\n      /^([a-zA-Z0-9_-]{11})$/ // Direct video ID\n    ];\n    \n    for (const pattern of patterns) {\n      const match = youtubeUrl.match(pattern);\n      if (match) {\n        videoId = match[1];\n        break;\n      }\n    }\n  }\n  \n  if (videoId) {\n    items.push({\n      json: {\n        ...item.json,\n        videoId: videoId,\n        rowIndex: item.json.__rowIndex || items.length + 2,\n        totalTodoCount: todoCount\n      }\n    });\n    \n    // Process only first item, return for next iteration\n    break;\n  }\n}\n\n// If no items to process, return special signal\nif (items.length === 0) {\n  console.log('No more items to process - all done!');\n  return [{\n    json: {\n      allComplete: true,\n      totalTodoCount: 0,\n      message: 'All items processed!'\n    }\n  }];\n}\n\nconsole.log(`Found ${todoCount} items to process, processing first item`);\nreturn items;"
       },
       "id": "extract-video-id",
       "name": "Extract Video ID",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [580, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-video-to-process",
+              "leftValue": "={{ $json.allComplete }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-has-video",
+      "name": "IF Has Video to Process",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [760, 300]
     },
     {
       "parameters": {
@@ -55,18 +84,18 @@
       "name": "Get Video Data (oEmbed)",
       "type": "n8n-nodes-base.httpRequest", 
       "typeVersion": 4.1,
-      "position": [760, 300],
+      "position": [940, 200],
       "continueOnFail": true
     },
     {
       "parameters": {
-        "jsCode": "// Process video data and extract title, description, and thumbnail\nconst originalItem = $('Extract Video ID').item.json;\n\n// Get oEmbed data safely\nlet oembedData = null;\ntry {\n  const oembedNode = $('Get Video Data (oEmbed)');\n  oembedData = oembedNode?.item?.json;\n} catch (error) {\n  console.log('Could not get oEmbed data:', error.message);\n}\n\n// Extract title, description, and thumbnail URL\nlet title = `Video ${originalItem.videoId}`;\nlet description = 'Description not available';\nlet thumbnail = '';\n\nif (oembedData && !oembedData.error && oembedData.title) {\n  title = oembedData.title;\n  \n  // YouTube oEmbed doesn't provide description, so we'll use the title as content idea\n  description = `Video idea based on title: ${oembedData.title}`;\n  \n  // If there's additional info, use it\n  if (oembedData.author_name) {\n    description += ` | Channel: ${oembedData.author_name}`;\n  }\n  \n  // Generate thumbnail URL from video ID\n  thumbnail = `https://img.youtube.com/vi/${originalItem.videoId}/maxresdefault.jpg`;\n}\n\nreturn [{\n  json: {\n    rowIndex: originalItem.rowIndex,\n    YouTubeURL: originalItem['YouTube URL'],\n    Title: title,\n    Description: description,\n    Thumbnail: thumbnail,\n    Status: 'Done',\n    processedAt: new Date().toISOString()\n  }\n}];"
+        "jsCode": "// Process video data and extract title, description, and thumbnail\nconst originalItem = $('Extract Video ID').item.json;\n\n// Get oEmbed data safely\nlet oembedData = null;\ntry {\n  const oembedNode = $('Get Video Data (oEmbed)');\n  oembedData = oembedNode?.item?.json;\n} catch (error) {\n  console.log('Could not get oEmbed data:', error.message);\n}\n\n// Extract title, description, and thumbnail URL\nlet title = `Video ${originalItem.videoId}`;\nlet description = 'Description not available';\nlet thumbnail = '';\n\nif (oembedData && !oembedData.error && oembedData.title) {\n  title = oembedData.title;\n  \n  // YouTube oEmbed doesn't provide description, so we'll use the title as content idea\n  description = `Video idea based on title: ${oembedData.title}`;\n  \n  // If there's additional info, use it\n  if (oembedData.author_name) {\n    description += ` | Channel: ${oembedData.author_name}`;\n  }\n  \n  // Generate thumbnail URL from video ID\n  thumbnail = `https://img.youtube.com/vi/${originalItem.videoId}/maxresdefault.jpg`;\n}\n\n// Calculate remaining items\nconst remainingItems = originalItem.totalTodoCount - 1;\nconsole.log(`Processed 1 item, ${remainingItems} items remaining`);\n\nreturn [{\n  json: {\n    rowIndex: originalItem.rowIndex,\n    YouTubeURL: originalItem['YouTube URL'],\n    Title: title,\n    Description: description,\n    Thumbnail: thumbnail,\n    Status: 'Done',\n    processedAt: new Date().toISOString(),\n    remainingItems: remainingItems\n  }\n}];"
       },
       "id": "process-video-data",
       "name": "Process Video Data",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [940, 300]
+      "position": [1120, 200]
     },
     {
       "parameters": {
@@ -75,16 +104,16 @@
         "operation": "update",
         "documentId": {
           "__rl": true,
-          "value": "={{ $('Manual Trigger').item.json.spreadsheetId }}",
-          "mode": "expression"
+          "value": "1q7n6-F7Ji2Vz6U_tS9f7z9hxnPx1bucOeNIO4S5-qZg",
+          "mode": "id"
         },
         "sheetName": {
           "__rl": true,
-          "value": "Sheet1",
+          "value": "Video",
           "mode": "name"
         },
-        "range": "={{ 'B' + $json.rowIndex + ':E' + $json.rowIndex }}",
-        "keyRow": 1,
+        "columnToMatchOn": "YouTube URL",
+        "valueToMatchOn": "={{ $json.YouTubeURL }}",
         "dataMode": "define",
         "fieldsUi": {
           "values": [
@@ -111,7 +140,75 @@
       "name": "Update Google Sheet",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4,
-      "position": [1120, 300]
+      "position": [1300, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Re-read sheet to check if more items need processing\nconst sheetData = $('Read Google Sheet').all();\nlet todoCount = 0;\n\n// Count items that are still not 'Done'\nfor (const item of sheetData) {\n  const status = item.json['Status'];\n  if (status !== 'Done') {\n    todoCount++;\n  }\n}\n\nconsole.log(`Items still to process: ${todoCount}`);\n\nif (todoCount > 0) {\n  // More items to process\n  return [{\n    json: {\n      shouldContinue: true,\n      remainingItems: todoCount,\n      message: `${todoCount} items remaining, continuing loop...`\n    }\n  }];\n} else {\n  // All items processed\n  return [{\n    json: {\n      shouldContinue: false,\n      remainingItems: 0,\n      message: 'All items processed! Loop complete.'\n    }\n  }];\n}"
+      },
+      "id": "check-remaining",
+      "name": "Check Remaining Items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1480, 200]
+    },
+    {
+      "parameters": {
+        "amount": 1,
+        "unit": "seconds"
+      },
+      "id": "wait-delay",
+      "name": "Wait 1s",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [1660, 100]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Final completion message\nconst inputData = $input.first().json;\n\nreturn [{\n  json: {\n    status: 'completed',\n    message: inputData.message || 'All items processed successfully!',\n    totalProcessed: 'All YouTube videos have been processed',\n    completedAt: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "completion-message",
+      "name": "Completion Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1480, 400]
+    },
+    {
+      "parameters": {},
+      "id": "no-operation",
+      "name": "Loop Complete",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1660, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "should-continue",
+              "leftValue": "={{ $json.shouldContinue }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-continue-loop",
+      "name": "IF Continue Loop",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1660, 200]
     }
   ],
   "connections": {
@@ -141,7 +238,25 @@
       "main": [
         [
           {
+            "node": "IF Has Video to Process",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Has Video to Process": {
+      "main": [
+        [
+          {
             "node": "Get Video Data (oEmbed)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Completion Message",
             "type": "main",
             "index": 0
           }
@@ -164,6 +279,68 @@
         [
           {
             "node": "Update Google Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Google Sheet": {
+      "main": [
+        [
+          {
+            "node": "Check Remaining Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Remaining Items": {
+      "main": [
+        [
+          {
+            "node": "IF Continue Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 1s": {
+      "main": [
+        [
+          {
+            "node": "Read Google Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Completion Message": {
+      "main": [
+        [
+          {
+            "node": "Loop Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Continue Loop": {
+      "main": [
+        [
+          {
+            "node": "Wait 1s",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Completion Message",
             "type": "main",
             "index": 0
           }

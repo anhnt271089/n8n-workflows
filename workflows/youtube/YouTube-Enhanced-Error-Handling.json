@@ -1,0 +1,835 @@
+{
+  "name": "YouTube Enhanced Processor - Error Handling & Recovery",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [220, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Initialize error tracking and recovery state\nconst initData = {\n  workflowStartTime: new Date().toISOString(),\n  retryAttempts: {\n    youtubeAPI: 0,\n    transcript: 0,\n    aiService: 0,\n    googleSheets: 0\n  },\n  maxRetries: {\n    youtubeAPI: 3,\n    transcript: 5,\n    aiService: 3,\n    googleSheets: 4\n  },\n  backoffDelays: {\n    youtubeAPI: [2, 5, 10], // seconds\n    transcript: [3, 8, 15, 30, 60],\n    aiService: [5, 12, 25],\n    googleSheets: [1, 3, 7, 15]\n  },\n  errorLog: [],\n  recoveryMode: false,\n  lastSuccessfulStep: null\n};\n\nreturn [{ json: initData }];"
+      },
+      "id": "initialize-error-state",
+      "name": "Initialize Error State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [400, 400]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "sheet",
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "1q7n6-F7Ji2Vz6U_tS9f7z9hxnPx1bucOeNIO4S5-qZg",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Video",
+          "mode": "name"
+        },
+        "range": "A:F",
+        "keyRow": 1,
+        "dataStartRow": 2,
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "read-sheet-safe",
+      "name": "Read Google Sheet (Safe)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [580, 400],
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 4,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "sheets-error-check",
+              "leftValue": "={{ $json.error }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-sheets-error",
+      "name": "IF Sheets Error",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [760, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Handle Google Sheets errors with retry logic\nconst errorState = $('Initialize Error State').item.json;\nconst sheetsError = $input.item.json;\n\n// Increment retry counter\nerrorState.retryAttempts.googleSheets++;\n\n// Log the error\nconst errorDetails = {\n  timestamp: new Date().toISOString(),\n  service: 'googleSheets',\n  operation: 'read',\n  error: sheetsError.error || 'Unknown sheets error',\n  attemptNumber: errorState.retryAttempts.googleSheets,\n  httpCode: sheetsError.httpCode || null\n};\n\nerrorState.errorLog.push(errorDetails);\n\n// Check if we should retry\nif (errorState.retryAttempts.googleSheets <= errorState.maxRetries.googleSheets) {\n  const delayIndex = Math.min(errorState.retryAttempts.googleSheets - 1, errorState.backoffDelays.googleSheets.length - 1);\n  const delaySeconds = errorState.backoffDelays.googleSheets[delayIndex];\n  \n  console.log(`Google Sheets error (attempt ${errorState.retryAttempts.googleSheets}/${errorState.maxRetries.googleSheets}). Retrying in ${delaySeconds}s`);\n  \n  return [{\n    json: {\n      ...errorState,\n      shouldRetry: true,\n      retryDelay: delaySeconds,\n      currentError: errorDetails,\n      nextAction: 'retry_sheets_read'\n    }\n  }];\n} else {\n  // Max retries exceeded - trigger fallback\n  console.log('Google Sheets max retries exceeded. Triggering fallback strategy.');\n  \n  return [{\n    json: {\n      ...errorState,\n      shouldRetry: false,\n      fallbackRequired: true,\n      failedService: 'googleSheets',\n      currentError: errorDetails,\n      nextAction: 'fallback_sheets'\n    }\n  }];\n}"
+      },
+      "id": "handle-sheets-error",
+      "name": "Handle Sheets Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [940, 300]
+    },
+    {
+      "parameters": {
+        "amount": "={{ $json.retryDelay }}",
+        "unit": "seconds"
+      },
+      "id": "wait-sheets-retry",
+      "name": "Wait - Sheets Retry",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [1120, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract video ID and prepare for processing with error handling\nconst items = [];\nconst errorState = $('Initialize Error State').item.json;\nlet todoCount = 0;\n\n// Safely get sheet data\nlet sheetData = [];\ntry {\n  sheetData = $('Read Google Sheet (Safe)').all();\n} catch (error) {\n  console.log('Error getting sheet data:', error.message);\n  return [{\n    json: {\n      ...errorState,\n      error: 'Failed to access sheet data',\n      nextAction: 'error_notification'\n    }\n  }];\n}\n\n// Count all items that need processing\nfor (const item of sheetData) {\n  const status = item.json['Status'];\n  const errorStatus = item.json['Error_Status'];\n  \n  // Process items that are not 'Done' or have recoverable errors\n  if (status !== 'Done' && errorStatus !== 'FATAL') {\n    todoCount++;\n  }\n}\n\n// Find first item to process (prioritize error recovery)\nfor (const item of sheetData) {\n  const youtubeUrl = item.json['YouTube URL'];\n  const status = item.json['Status'];\n  const errorStatus = item.json['Error_Status'];\n  const lastError = item.json['Last_Error'];\n  \n  // Skip if already processed or has fatal error\n  if (status === 'Done' || errorStatus === 'FATAL') {\n    continue;\n  }\n  \n  let videoId = null;\n  \n  if (youtubeUrl) {\n    // Extract video ID from various YouTube URL formats\n    const patterns = [\n      /(?:youtube\\.com\\/watch\\?v=|youtu\\.be\\/|youtube\\.com\\/embed\\/)([^&\\n?#]+)/,\n      /^([a-zA-Z0-9_-]{11})$/ // Direct video ID\n    ];\n    \n    for (const pattern of patterns) {\n      const match = youtubeUrl.match(pattern);\n      if (match) {\n        videoId = match[1];\n        break;\n      }\n    }\n  }\n  \n  if (videoId) {\n    items.push({\n      json: {\n        ...item.json,\n        ...errorState,\n        videoId: videoId,\n        rowIndex: item.json.__rowIndex || items.length + 2,\n        totalTodoCount: todoCount,\n        isRecovery: errorStatus === 'RETRYING',\n        lastError: lastError || null,\n        lastSuccessfulStep: 'extract_video_id'\n      }\n    });\n    \n    // Process only first item, return for next iteration\n    break;\n  }\n}\n\n// If no items to process, return completion signal\nif (items.length === 0) {\n  console.log('No more items to process - all done!');\n  return [{\n    json: {\n      ...errorState,\n      allComplete: true,\n      totalTodoCount: 0,\n      message: 'All items processed!',\n      lastSuccessfulStep: 'workflow_complete'\n    }\n  }];\n}\n\nconsole.log(`Found ${todoCount} items to process, processing first item (Recovery: ${items[0].json.isRecovery})`);\nreturn items;"
+      },
+      "id": "extract-video-id-safe",
+      "name": "Extract Video ID (Safe)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [760, 500]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-video-to-process",
+              "leftValue": "={{ $json.allComplete }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-has-video-safe",
+      "name": "IF Has Video to Process",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [940, 500]
+    },
+    {
+      "parameters": {
+        "url": "=https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={{ $json.videoId }}&format=json",
+        "options": {
+          "timeout": 15000,
+          "retry": {
+            "enabled": true,
+            "maxAttempts": 3,
+            "waitBetweenAttempts": 2000
+          },
+          "response": {
+            "fullResponse": true
+          }
+        }
+      },
+      "id": "get-video-data-safe",
+      "name": "Get Video Data (Safe)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1120, 400],
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "youtube-api-error",
+              "leftValue": "={{ $json.error }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists"
+              }
+            },
+            {
+              "id": "http-error-status",
+              "leftValue": "={{ $json.statusCode }}",
+              "rightValue": 399,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "id": "if-youtube-error",
+      "name": "IF YouTube API Error",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1300, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Handle YouTube API errors with intelligent retry logic\nconst currentData = $input.item.json;\nconst youtubeError = $('Get Video Data (Safe)').item.json;\n\n// Increment retry counter\ncurrentData.retryAttempts.youtubeAPI++;\n\n// Analyze error type\nlet errorType = 'unknown';\nlet isRetryable = true;\nlet customDelay = null;\n\nif (youtubeError.statusCode) {\n  switch (youtubeError.statusCode) {\n    case 404:\n      errorType = 'video_not_found';\n      isRetryable = false; // Don't retry 404s\n      break;\n    case 429:\n      errorType = 'rate_limit';\n      customDelay = 60; // Wait 1 minute for rate limits\n      break;\n    case 403:\n      errorType = 'forbidden';\n      isRetryable = false;\n      break;\n    case 500:\n    case 502:\n    case 503:\n    case 504:\n      errorType = 'server_error';\n      break;\n    default:\n      errorType = `http_${youtubeError.statusCode}`;\n  }\n}\n\n// Log the error\nconst errorDetails = {\n  timestamp: new Date().toISOString(),\n  service: 'youtubeAPI',\n  operation: 'oembed',\n  error: youtubeError.error || `HTTP ${youtubeError.statusCode}`,\n  errorType: errorType,\n  attemptNumber: currentData.retryAttempts.youtubeAPI,\n  videoId: currentData.videoId,\n  isRetryable: isRetryable\n};\n\ncurrentData.errorLog.push(errorDetails);\n\n// Determine next action\nif (!isRetryable) {\n  // Use fallback strategy for non-retryable errors\n  console.log(`YouTube API non-retryable error (${errorType}). Using fallback strategy.`);\n  \n  return [{\n    json: {\n      ...currentData,\n      shouldRetry: false,\n      useFallback: true,\n      fallbackReason: errorType,\n      currentError: errorDetails,\n      nextAction: 'fallback_youtube_data'\n    }\n  }];\n} else if (currentData.retryAttempts.youtubeAPI <= currentData.maxRetries.youtubeAPI) {\n  // Calculate retry delay\n  const delayIndex = Math.min(currentData.retryAttempts.youtubeAPI - 1, currentData.backoffDelays.youtubeAPI.length - 1);\n  let delaySeconds = customDelay || currentData.backoffDelays.youtubeAPI[delayIndex];\n  \n  // Add jitter to prevent thundering herd\n  delaySeconds += Math.random() * 3;\n  \n  console.log(`YouTube API error (${errorType}, attempt ${currentData.retryAttempts.youtubeAPI}/${currentData.maxRetries.youtubeAPI}). Retrying in ${Math.round(delaySeconds)}s`);\n  \n  return [{\n    json: {\n      ...currentData,\n      shouldRetry: true,\n      retryDelay: Math.round(delaySeconds),\n      currentError: errorDetails,\n      nextAction: 'retry_youtube_api'\n    }\n  }];\n} else {\n  // Max retries exceeded - use fallback\n  console.log('YouTube API max retries exceeded. Using fallback strategy.');\n  \n  return [{\n    json: {\n      ...currentData,\n      shouldRetry: false,\n      useFallback: true,\n      fallbackReason: 'max_retries_exceeded',\n      currentError: errorDetails,\n      nextAction: 'fallback_youtube_data'\n    }\n  }];\n}"
+      },
+      "id": "handle-youtube-error",
+      "name": "Handle YouTube Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1480, 300]
+    },
+    {
+      "parameters": {
+        "amount": "={{ $json.retryDelay }}",
+        "unit": "seconds"
+      },
+      "id": "wait-youtube-retry",
+      "name": "Wait - YouTube Retry",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [1660, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Fallback strategy for YouTube data when API fails\nconst currentData = $input.item.json;\n\nconsole.log(`Using YouTube fallback strategy for video ${currentData.videoId}`);\n\n// Generate fallback data\nconst fallbackTitle = `Video ${currentData.videoId} (API Unavailable)`;\nconst fallbackDescription = `Content processing for video ID: ${currentData.videoId}. Original API error: ${currentData.currentError?.error || 'Unknown error'}`;\nconst fallbackThumbnail = `https://img.youtube.com/vi/${currentData.videoId}/maxresdefault.jpg`;\n\n// Log fallback usage\nconst fallbackLog = {\n  timestamp: new Date().toISOString(),\n  service: 'fallback',\n  operation: 'youtube_data_fallback',\n  reason: currentData.fallbackReason,\n  videoId: currentData.videoId\n};\n\ncurrentData.errorLog.push(fallbackLog);\n\nreturn [{\n  json: {\n    ...currentData,\n    videoTitle: fallbackTitle,\n    videoDescription: fallbackDescription,\n    videoThumbnail: fallbackThumbnail,\n    dataSource: 'fallback',\n    lastSuccessfulStep: 'fallback_youtube_data',\n    nextAction: 'process_video_data'\n  }\n}];"
+      },
+      "id": "youtube-fallback",
+      "name": "YouTube Data Fallback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1480, 500]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process video data safely with error handling\nlet currentData = $input.item.json;\n\n// Determine data source\nlet videoData = null;\nlet dataSource = 'fallback';\n\n// Try to get successful YouTube API data first\ntry {\n  const youtubeNode = $('Get Video Data (Safe)');\n  const youtubeResponse = youtubeNode?.item?.json;\n  \n  if (youtubeResponse && !youtubeResponse.error && youtubeResponse.body) {\n    videoData = typeof youtubeResponse.body === 'string' \n      ? JSON.parse(youtubeResponse.body) \n      : youtubeResponse.body;\n    dataSource = 'youtube_api';\n  } else if (youtubeResponse && !youtubeResponse.error && youtubeResponse.title) {\n    videoData = youtubeResponse;\n    dataSource = 'youtube_api';\n  }\n} catch (error) {\n  console.log('Could not process YouTube API response:', error.message);\n}\n\n// Extract title, description, and thumbnail\nlet title, description, thumbnail;\n\nif (dataSource === 'youtube_api' && videoData) {\n  title = videoData.title || `Video ${currentData.videoId}`;\n  description = videoData.author_name \n    ? `Video by ${videoData.author_name}: ${videoData.title || 'No title available'}` \n    : `Video content: ${videoData.title || 'No title available'}`;\n  thumbnail = `https://img.youtube.com/vi/${currentData.videoId}/maxresdefault.jpg`;\n  \n  console.log('Successfully processed YouTube API data');\n} else {\n  // Use fallback data\n  title = currentData.videoTitle || `Video ${currentData.videoId} (Fallback)`;\n  description = currentData.videoDescription || 'Description not available due to API issues';\n  thumbnail = currentData.videoThumbnail || `https://img.youtube.com/vi/${currentData.videoId}/maxresdefault.jpg`;\n  \n  console.log('Using fallback video data');\n}\n\n// Calculate remaining items\nconst remainingItems = currentData.totalTodoCount - 1;\n\n// Update success tracking\ncurrentData.lastSuccessfulStep = 'process_video_data';\n\n// Reset YouTube retry counter on success\nif (dataSource === 'youtube_api') {\n  currentData.retryAttempts.youtubeAPI = 0;\n}\n\nreturn [{\n  json: {\n    ...currentData,\n    rowIndex: currentData.rowIndex,\n    YouTubeURL: currentData['YouTube URL'],\n    Title: title,\n    Description: description,\n    Thumbnail: thumbnail,\n    Status: 'Processing',\n    Error_Status: dataSource === 'fallback' ? 'FALLBACK_USED' : 'OK',\n    Data_Source: dataSource,\n    processedAt: new Date().toISOString(),\n    remainingItems: remainingItems\n  }\n}];"
+      },
+      "id": "process-video-data-safe",
+      "name": "Process Video Data (Safe)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1300, 600]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "sheet",
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1q7n6-F7Ji2Vz6U_tS9f7z9hxnPx1bucOeNIO4S5-qZg",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Video",
+          "mode": "name"
+        },
+        "columnToMatchOn": "YouTube URL",
+        "valueToMatchOn": "={{ $json.YouTubeURL }}",
+        "dataMode": "define",
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "Title",
+              "fieldValue": "={{ $json.Title }}"
+            },
+            {
+              "column": "Description", 
+              "fieldValue": "={{ $json.Description }}"
+            },
+            {
+              "column": "Thumbnail",
+              "fieldValue": "={{ $json.Thumbnail }}"
+            },
+            {
+              "column": "Status",
+              "fieldValue": "Done"
+            },
+            {
+              "column": "Error_Status",
+              "fieldValue": "={{ $json.Error_Status }}"
+            },
+            {
+              "column": "Last_Updated",
+              "fieldValue": "={{ $json.processedAt }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "update-sheet-safe",
+      "name": "Update Google Sheet (Safe)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [1480, 600],
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 4,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "update-error",
+              "leftValue": "={{ $json.error }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-update-error",
+      "name": "IF Update Error",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1660, 600]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Handle Google Sheets update errors\nconst currentData = $('Process Video Data (Safe)').item.json;\nconst updateError = $input.item.json;\n\n// Increment retry counter\ncurrentData.retryAttempts.googleSheets++;\n\n// Log the error\nconst errorDetails = {\n  timestamp: new Date().toISOString(),\n  service: 'googleSheets',\n  operation: 'update',\n  error: updateError.error || 'Unknown update error',\n  attemptNumber: currentData.retryAttempts.googleSheets,\n  videoId: currentData.videoId\n};\n\ncurrentData.errorLog.push(errorDetails);\n\n// Check if we should retry\nif (currentData.retryAttempts.googleSheets <= currentData.maxRetries.googleSheets) {\n  const delayIndex = Math.min(currentData.retryAttempts.googleSheets - 1, currentData.backoffDelays.googleSheets.length - 1);\n  const delaySeconds = currentData.backoffDelays.googleSheets[delayIndex];\n  \n  console.log(`Google Sheets update error (attempt ${currentData.retryAttempts.googleSheets}/${currentData.maxRetries.googleSheets}). Retrying in ${delaySeconds}s`);\n  \n  return [{\n    json: {\n      ...currentData,\n      shouldRetryUpdate: true,\n      retryDelay: delaySeconds,\n      currentError: errorDetails,\n      nextAction: 'retry_sheets_update'\n    }\n  }];\n} else {\n  // Max retries exceeded - log error but continue processing\n  console.log('Google Sheets update max retries exceeded. Continuing with next item.');\n  \n  // Mark item with error status for manual review\n  return [{\n    json: {\n      ...currentData,\n      shouldRetryUpdate: false,\n      updateFailed: true,\n      Status: 'Processing_Error',\n      Error_Status: 'UPDATE_FAILED',\n      currentError: errorDetails,\n      nextAction: 'continue_processing'\n    }\n  }];\n}"
+      },
+      "id": "handle-update-error",
+      "name": "Handle Update Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1840, 500]
+    },
+    {
+      "parameters": {
+        "amount": "={{ $json.retryDelay }}",
+        "unit": "seconds"
+      },
+      "id": "wait-update-retry",
+      "name": "Wait - Update Retry",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [2020, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Check remaining items and prepare for next iteration\nlet currentData = $input.item.json;\n\n// Try to re-read sheet to get current status\nlet sheetData = [];\ntry {\n  sheetData = $('Read Google Sheet (Safe)').all();\n} catch (error) {\n  console.log('Could not re-read sheet for remaining count, using estimate');\n  // Use estimated count\n  const remainingItems = Math.max(0, currentData.remainingItems || 0);\n  \n  return [{\n    json: {\n      ...currentData,\n      shouldContinue: remainingItems > 0,\n      remainingItems: remainingItems,\n      message: remainingItems > 0 \n        ? `Estimated ${remainingItems} items remaining (sheet read failed)` \n        : 'Processing complete (estimated)',\n      lastSuccessfulStep: 'check_remaining_items'\n    }\n  }];\n}\n\n// Count items that still need processing\nlet todoCount = 0;\nfor (const item of sheetData) {\n  const status = item.json['Status'];\n  const errorStatus = item.json['Error_Status'];\n  \n  // Count items that are not 'Done' and don't have fatal errors\n  if (status !== 'Done' && errorStatus !== 'FATAL') {\n    todoCount++;\n  }\n}\n\nconsole.log(`Items still to process: ${todoCount}`);\n\n// Reset retry counters on successful sheet read\ncurrentData.retryAttempts.googleSheets = 0;\ncurrentData.lastSuccessfulStep = 'check_remaining_items';\n\nif (todoCount > 0) {\n  // More items to process\n  return [{\n    json: {\n      ...currentData,\n      shouldContinue: true,\n      remainingItems: todoCount,\n      message: `${todoCount} items remaining, continuing loop...`\n    }\n  }];\n} else {\n  // All items processed\n  return [{\n    json: {\n      ...currentData,\n      shouldContinue: false,\n      remainingItems: 0,\n      message: 'All items processed! Loop complete.',\n      workflowEndTime: new Date().toISOString()\n    }\n  }];\n}"
+      },
+      "id": "check-remaining-safe",
+      "name": "Check Remaining Items (Safe)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1660, 800]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "should-continue",
+              "leftValue": "={{ $json.shouldContinue }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-continue-loop-safe",
+      "name": "IF Continue Loop",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1840, 800]
+    },
+    {
+      "parameters": {
+        "amount": 2,
+        "unit": "seconds"
+      },
+      "id": "wait-loop-delay",
+      "name": "Wait - Loop Delay",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [2020, 700]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generate comprehensive completion report with error summary\nconst finalData = $input.first().json;\n\n// Calculate processing statistics\nconst workflowDuration = finalData.workflowEndTime \n  ? (new Date(finalData.workflowEndTime) - new Date(finalData.workflowStartTime)) / 1000\n  : 0;\n\n// Categorize errors\nconst errorSummary = {\n  total: finalData.errorLog.length,\n  byService: {},\n  byType: {},\n  retryStats: finalData.retryAttempts\n};\n\nfor (const error of finalData.errorLog) {\n  // Count by service\n  errorSummary.byService[error.service] = (errorSummary.byService[error.service] || 0) + 1;\n  \n  // Count by error type\n  const errorType = error.errorType || error.operation;\n  errorSummary.byType[errorType] = (errorSummary.byType[errorType] || 0) + 1;\n}\n\nconst completionReport = {\n  status: 'completed',\n  message: finalData.message || 'All items processed successfully!',\n  statistics: {\n    workflowDuration: `${Math.round(workflowDuration)}s`,\n    totalErrors: errorSummary.total,\n    errorsByService: errorSummary.byService,\n    retryAttempts: errorSummary.retryStats\n  },\n  completedAt: new Date().toISOString(),\n  lastSuccessfulStep: finalData.lastSuccessfulStep,\n  recommendedActions: []\n};\n\n// Add recommendations based on error patterns\nif (errorSummary.byService.youtubeAPI > 2) {\n  completionReport.recommendedActions.push('Consider implementing YouTube API key rotation due to frequent API errors');\n}\n\nif (errorSummary.byService.googleSheets > 1) {\n  completionReport.recommendedActions.push('Review Google Sheets API quotas and permissions');\n}\n\nif (errorSummary.total === 0) {\n  completionReport.recommendedActions.push('Workflow completed without errors - excellent!');\n}\n\nreturn [{ json: completionReport }];"
+      },
+      "id": "completion-report",
+      "name": "Generate Completion Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1840, 900]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-errors",
+              "leftValue": "={{ $json.statistics.totalErrors }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-has-errors",
+      "name": "IF Has Errors",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2020, 900]
+    },
+    {
+      "parameters": {
+        "fromEmail": "noreply@yourworkflow.com",
+        "toEmail": "admin@yourcompany.com",
+        "subject": "YouTube Workflow Completed with Errors - {{ $json.statistics.totalErrors }} errors",
+        "emailFormat": "html",
+        "message": "<!DOCTYPE html>\n<html>\n<head>\n  <style>\n    body { font-family: Arial, sans-serif; margin: 20px; }\n    .header { background-color: #ff6b6b; color: white; padding: 15px; border-radius: 5px; }\n    .content { margin: 20px 0; }\n    .stats { background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 10px 0; }\n    .error-detail { background-color: #fff3cd; padding: 10px; border-left: 4px solid #ffc107; margin: 5px 0; }\n    .recommendation { background-color: #d1ecf1; padding: 10px; border-left: 4px solid #17a2b8; margin: 5px 0; }\n  </style>\n</head>\n<body>\n  <div class=\"header\">\n    <h2>YouTube Workflow Completed with Errors</h2>\n  </div>\n  \n  <div class=\"content\">\n    <p><strong>Workflow Status:</strong> {{ $json.status }}</p>\n    <p><strong>Completion Time:</strong> {{ $json.completedAt }}</p>\n    <p><strong>Duration:</strong> {{ $json.statistics.workflowDuration }}</p>\n  </div>\n  \n  <div class=\"stats\">\n    <h3>Error Summary</h3>\n    <p><strong>Total Errors:</strong> {{ $json.statistics.totalErrors }}</p>\n    <p><strong>Errors by Service:</strong></p>\n    <ul>\n      {% for service, count in $json.statistics.errorsByService %}\n        <li>{{ service }}: {{ count }} errors</li>\n      {% endfor %}\n    </ul>\n    \n    <p><strong>Retry Attempts:</strong></p>\n    <ul>\n      <li>YouTube API: {{ $json.statistics.retryAttempts.youtubeAPI }}</li>\n      <li>Google Sheets: {{ $json.statistics.retryAttempts.googleSheets }}</li>\n    </ul>\n  </div>\n  \n  {% if $json.recommendedActions.length > 0 %}\n  <div>\n    <h3>Recommended Actions</h3>\n    {% for action in $json.recommendedActions %}\n      <div class=\"recommendation\">{{ action }}</div>\n    {% endfor %}\n  </div>\n  {% endif %}\n  \n  <p>Please review the workflow execution and address any recurring issues.</p>\n</body>\n</html>",
+        "options": {}
+      },
+      "id": "send-error-notification",
+      "name": "Send Error Notification",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [2200, 800],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "fromEmail": "noreply@yourworkflow.com",
+        "toEmail": "admin@yourcompany.com",
+        "subject": "YouTube Workflow Completed Successfully",
+        "emailFormat": "html",
+        "message": "<!DOCTYPE html>\n<html>\n<head>\n  <style>\n    body { font-family: Arial, sans-serif; margin: 20px; }\n    .header { background-color: #28a745; color: white; padding: 15px; border-radius: 5px; }\n    .content { margin: 20px 0; }\n    .stats { background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 10px 0; }\n  </style>\n</head>\n<body>\n  <div class=\"header\">\n    <h2>YouTube Workflow Completed Successfully</h2>\n  </div>\n  \n  <div class=\"content\">\n    <p><strong>Status:</strong> {{ $json.status }}</p>\n    <p><strong>Message:</strong> {{ $json.message }}</p>\n    <p><strong>Completion Time:</strong> {{ $json.completedAt }}</p>\n    <p><strong>Duration:</strong> {{ $json.statistics.workflowDuration }}</p>\n  </div>\n  \n  <div class=\"stats\">\n    <h3>Execution Summary</h3>\n    <p>✅ All items processed without errors</p>\n    <p><strong>Last Successful Step:</strong> {{ $json.lastSuccessfulStep }}</p>\n  </div>\n  \n  <p>The YouTube transcript processing workflow has completed successfully!</p>\n</body>\n</html>",
+        "options": {}
+      },
+      "id": "send-success-notification",
+      "name": "Send Success Notification",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [2200, 1000],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {},
+      "id": "workflow-complete",
+      "name": "Workflow Complete",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [2400, 900]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Initialize Error State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Initialize Error State": {
+      "main": [
+        [
+          {
+            "node": "Read Google Sheet (Safe)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Google Sheet (Safe)": {
+      "main": [
+        [
+          {
+            "node": "IF Sheets Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Sheets Error": {
+      "main": [
+        [
+          {
+            "node": "Handle Sheets Error",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Extract Video ID (Safe)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Sheets Error": {
+      "main": [
+        [
+          {
+            "node": "Wait - Sheets Retry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait - Sheets Retry": {
+      "main": [
+        [
+          {
+            "node": "Read Google Sheet (Safe)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Video ID (Safe)": {
+      "main": [
+        [
+          {
+            "node": "IF Has Video to Process",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Has Video to Process": {
+      "main": [
+        [
+          {
+            "node": "Get Video Data (Safe)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Generate Completion Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Video Data (Safe)": {
+      "main": [
+        [
+          {
+            "node": "IF YouTube API Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF YouTube API Error": {
+      "main": [
+        [
+          {
+            "node": "Handle YouTube Error",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Process Video Data (Safe)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle YouTube Error": {
+      "main": [
+        [
+          {
+            "node": "Wait - YouTube Retry",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "YouTube Data Fallback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait - YouTube Retry": {
+      "main": [
+        [
+          {
+            "node": "Get Video Data (Safe)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "YouTube Data Fallback": {
+      "main": [
+        [
+          {
+            "node": "Process Video Data (Safe)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Video Data (Safe)": {
+      "main": [
+        [
+          {
+            "node": "Update Google Sheet (Safe)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Google Sheet (Safe)": {
+      "main": [
+        [
+          {
+            "node": "IF Update Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Update Error": {
+      "main": [
+        [
+          {
+            "node": "Handle Update Error",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Check Remaining Items (Safe)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Update Error": {
+      "main": [
+        [
+          {
+            "node": "Wait - Update Retry",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Check Remaining Items (Safe)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait - Update Retry": {
+      "main": [
+        [
+          {
+            "node": "Update Google Sheet (Safe)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Remaining Items (Safe)": {
+      "main": [
+        [
+          {
+            "node": "IF Continue Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Continue Loop": {
+      "main": [
+        [
+          {
+            "node": "Wait - Loop Delay",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Generate Completion Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait - Loop Delay": {
+      "main": [
+        [
+          {
+            "node": "Read Google Sheet (Safe)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Completion Report": {
+      "main": [
+        [
+          {
+            "node": "IF Has Errors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Has Errors": {
+      "main": [
+        [
+          {
+            "node": "Send Error Notification",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Success Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Error Notification": {
+      "main": [
+        [
+          {
+            "node": "Workflow Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Success Notification": {
+      "main": [
+        [
+          {
+            "node": "Workflow Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": {
+      "id": "error-recovery-workflow"
+    }
+  },
+  "staticData": {},
+  "tags": ["error-handling", "recovery", "youtube", "robust"],
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "versionId": "2"
+}

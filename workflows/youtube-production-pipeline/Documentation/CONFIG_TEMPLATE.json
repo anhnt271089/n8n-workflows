@@ -1,0 +1,241 @@
+{
+  "youtube_production_pipeline_config": {
+    "system_info": {
+      "version": "1.0.0",
+      "created": "2025-08-01",
+      "description": "Complete YouTube production pipeline configuration"
+    },
+    
+    "google_drive": {
+      "root_folder_name": "YouTube_Production_System",
+      "folder_structure": {
+        "master_sheets": "Master_Sheets",
+        "videos_in_production": "Videos_In_Production", 
+        "completed_videos": "Completed_Videos",
+        "templates": "Templates"
+      },
+      "folder_ids_to_configure": {
+        "root_folder_id": "REPLACE_WITH_YOUR_ROOT_FOLDER_ID",
+        "master_sheets_id": "REPLACE_WITH_MASTER_SHEETS_FOLDER_ID",
+        "videos_in_production_id": "REPLACE_WITH_VIDEOS_IN_PRODUCTION_FOLDER_ID",
+        "completed_videos_id": "REPLACE_WITH_COMPLETED_VIDEOS_FOLDER_ID",
+        "templates_id": "REPLACE_WITH_TEMPLATES_FOLDER_ID"
+      }
+    },
+    
+    "google_sheets": {
+      "master_sheet": {
+        "name": "Master_YouTube_Queue",
+        "sheet_id": "REPLACE_WITH_YOUR_MASTER_SHEET_ID",
+        "columns": {
+          "A": "Video_ID",
+          "B": "YouTube_URL", 
+          "C": "Video_Title",
+          "D": "Status",
+          "E": "AI_Idea_1",
+          "F": "AI_Idea_2",
+          "G": "AI_Idea_3",
+          "H": "Selected_Idea",
+          "I": "Script_Status",
+          "J": "Video_Editing_Status",
+          "K": "Audio_Status",
+          "L": "Images_Progress",
+          "M": "Due_Date",
+          "N": "Priority",
+          "O": "Assigned_Editor",
+          "P": "Thumbnail_Status",
+          "Q": "Video_Folder_URL",
+          "R": "Notes"
+        }
+      },
+      "template_workbook": {
+        "name_pattern": "{Video_ID}_Production_Workbook",
+        "tabs": [
+          "Video_Info",
+          "Full_Script", 
+          "Sentence_Breakdown",
+          "Production_Tracking",
+          "SEO_Marketing"
+        ]
+      }
+    },
+    
+    "telegram": {
+      "bot_token": "REPLACE_WITH_YOUR_BOT_TOKEN",
+      "chat_id": "REPLACE_WITH_YOUR_CHAT_ID",
+      "notification_types": {
+        "ideas_ready": true,
+        "script_ready": true,
+        "script_approved": true,
+        "daily_status": true,
+        "overdue_alerts": true,
+        "queue_empty": true
+      },
+      "daily_report_time": "09:00"
+    },
+    
+    "openai": {
+      "model": "gpt-4",
+      "api_key": "REPLACE_WITH_YOUR_OPENAI_API_KEY",
+      "temperature_settings": {
+        "idea_generation": 0.7,
+        "script_enhancement": 0.8,
+        "keyword_extraction": 0.3,
+        "seo_content": 0.7
+      },
+      "max_tokens": {
+        "ideas": 500,
+        "script": 3000,
+        "sentence_breakdown": 4000,
+        "seo_content": 2000
+      }
+    },
+    
+    "workflow_schedules": {
+      "main_processing": "every_30_minutes",
+      "script_processing": "every_15_minutes", 
+      "status_monitoring": "every_4_hours",
+      "daily_report": "daily_at_9am"
+    },
+    
+    "status_values": {
+      "video_status": [
+        "⏳ Pending",
+        "🟡 Ideas Ready", 
+        "🟠 Script Ready",
+        "📁 In Production",
+        "🎬 Complete"
+      ],
+      "script_status": [
+        "⏳ Pending",
+        "🟡 Generated",
+        "🔄 Review Required",
+        "✅ Approved",
+        "❌ Rejected"
+      ],
+      "production_status": [
+        "⏳ Not Started",
+        "🟡 In Progress",
+        "🔄 Review",
+        "✅ Complete"
+      ],
+      "priority_levels": [
+        "🔴 High",
+        "🟡 Medium", 
+        "🟢 Low"
+      ],
+      "thumbnail_status": [
+        "⏳ Not Started",
+        "🎨 Design In Progress",
+        "🔄 Review & Feedback", 
+        "✅ Approved",
+        "📱 A/B Testing"
+      ]
+    },
+    
+    "file_naming": {
+      "video_id_pattern": "YT{###}",
+      "folder_pattern": "{Video_ID}_{Clean_Title}",
+      "workbook_pattern": "{Video_ID}_Production_Workbook",
+      "image_pattern": "{Video_ID}_{Sentence#}_{Description}",
+      "audio_pattern": "{Video_ID}_{Stage}_{Version}"
+    },
+    
+    "content_settings": {
+      "default_sentence_count": 47,
+      "title_character_limits": {
+        "primary": [60, 100],
+        "youtube_shorts": [40, 60],
+        "clickbait": [70, 90]
+      },
+      "description_sections": [
+        "hook_opening",
+        "value_proposition", 
+        "timestamps",
+        "tools_resources",
+        "social_proof",
+        "tags_keywords"
+      ],
+      "thumbnail_concepts": 3,
+      "seo_title_variants": 5
+    },
+    
+    "team_roles": {
+      "content_manager": {
+        "permissions": ["approve_scripts", "set_priorities", "assign_editors"],
+        "notifications": ["script_ready", "overdue_alerts", "daily_status"]
+      },
+      "video_editor": {
+        "permissions": ["update_editing_status", "update_progress"],
+        "notifications": ["production_started", "assets_ready"]
+      },
+      "audio_editor": {
+        "permissions": ["update_audio_status"],
+        "notifications": ["script_approved", "audio_tasks"]
+      },
+      "thumbnail_designer": {
+        "permissions": ["update_thumbnail_status"],
+        "notifications": ["thumbnail_concepts_ready"]
+      }
+    },
+    
+    "automation_settings": {
+      "retry_attempts": 3,
+      "timeout_seconds": 300,
+      "batch_processing": false,
+      "error_notifications": true,
+      "auto_folder_creation": true,
+      "auto_template_deployment": true
+    },
+    
+    "quality_gates": {
+      "require_idea_selection": true,
+      "require_script_approval": true,
+      "auto_generate_content": true,
+      "validate_youtube_urls": true,
+      "check_duplicate_videos": true
+    },
+    
+    "performance_settings": {
+      "concurrent_processing": 1,
+      "api_rate_limits": {
+        "openai_requests_per_minute": 60,
+        "google_api_requests_per_second": 10
+      },
+      "cache_settings": {
+        "youtube_metadata": "24_hours",
+        "ai_responses": "7_days"
+      }
+    },
+    
+    "backup_settings": {
+      "auto_backup_sheets": true,
+      "backup_frequency": "daily",
+      "retention_days": 30,
+      "backup_location": "Google_Drive_Backup_Folder"
+    }
+  },
+  
+  "setup_instructions": {
+    "step_1": "Replace all REPLACE_WITH_YOUR_* values with actual credentials",
+    "step_2": "Update folder IDs after creating Google Drive structure", 
+    "step_3": "Configure N8N workflows with these settings",
+    "step_4": "Test with sample data before production use",
+    "step_5": "Train team on manual processes and approval workflows"
+  },
+  
+  "troubleshooting": {
+    "common_issues": {
+      "youtube_url_not_processing": "Check URL format and video accessibility",
+      "ai_ideas_not_generating": "Verify OpenAI API key and credits",
+      "telegram_not_working": "Check bot token and chat ID",
+      "folders_not_creating": "Verify Google Drive permissions"
+    },
+    "support_resources": {
+      "n8n_docs": "https://docs.n8n.io/",
+      "openai_docs": "https://platform.openai.com/docs",
+      "google_apis": "https://developers.google.com/",
+      "telegram_bots": "https://core.telegram.org/bots"
+    }
+  }
+}

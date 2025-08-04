@@ -1,0 +1,16 @@
+{
+  "name": "youtube-production-pipeline-sync",
+  "version": "1.0.0",
+  "description": "N8N Workflow Sync Monitor for YouTube Production Pipeline",
+  "main": "sync_monitor.js",
+  "scripts": {
+    "start": "node sync_monitor.js",
+    "monitor": "node sync_monitor.js"
+  },
+  "keywords": ["n8n", "workflow", "sync", "youtube", "automation"],
+  "author": "YouTube Production Pipeline",
+  "license": "MIT",
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}

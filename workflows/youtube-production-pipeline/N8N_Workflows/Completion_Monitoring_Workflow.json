@@ -1,0 +1,257 @@
+{
+  "name": "YouTube Production - Completion & Monitoring",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{"field": "hours", "value": 4}]
+        }
+      },
+      "id": "monitoring-trigger",
+      "name": "Monitor Every 4 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "sheet",
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "1yas-xnO7vhj4iZhO7baekkClq6Ca6YYbD3qjOdI53Qg",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Master_Queue",
+          "mode": "name"
+        },
+        "range": "A:T",
+        "keyRow": 1,
+        "dataStartRow": 2
+      },
+      "id": "read-master-sheet",
+      "name": "Read Master Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [400, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Monitor for script approvals and completion status<br>const masterData = $input.all();<br><br>const approvedScripts = [];<br>const completedVideos = [];<br>const overdueVideos = [];<br>const scriptReadyCount = [];<br><br>const today = new Date();<br><br>for (const item of masterData) {<br>  const status = item.json.Status || '';<br>  const scriptStatus = item.json.Script_Status || '';<br>  const videoId = item.json.Video_ID;<br>  const dueDate = item.json.Due_Date ? new Date(item.json.Due_Date) : null;<br>  <br>  // Check for newly approved scripts<br>  if (status === '🟠 Script Ready' && scriptStatus === '✅ Approved') {<br>    approvedScripts.push({<br>      video_id: videoId,<br>      title: item.json.Video_Title,<br>      selected_concept: item.json.Selected_Idea,<br>      folder_url: item.json.Video_Folder_URL<br>    });<br>  }<br>  <br>  // Check for completed videos<br>  if (status === '🎬 Complete') {<br>    completedVideos.push({<br>      video_id: videoId,<br>      title: item.json.Video_Title,<br>      completion_date: item.json.Due_Date<br>    });<br>  }<br>  <br>  // Check for overdue videos<br>  if (status === '📁 In Production' && dueDate && dueDate < today) {<br>    overdueVideos.push({<br>      video_id: videoId,<br>      title: item.json.Video_Title,<br>      due_date: item.json.Due_Date,<br>      days_overdue: Math.floor((today - dueDate) / (1000 * 60 * 60 * 24)),<br>      assigned: item.json.Assigned_Editor,<br>      priority: item.json.Priority<br>    });<br>  }<br>  <br>  // Count scripts awaiting approval<br>  if (status === '🟠 Script Ready' && scriptStatus === '🔄 Review Required') {<br>    scriptReadyCount.push({<br>      video_id: videoId,<br>      title: item.json.Video_Title,<br>      waiting_since: '4+ hours' // Simplified<br>    });<br>  }<br>}<br><br>return [{<br>  json: {<br>    approvedScripts,<br>    completedVideos,<br>    overdueVideos,<br>    scriptReadyCount,<br>    totalApproved: approvedScripts.length,<br>    totalCompleted: completedVideos.length,<br>    totalOverdue: overdueVideos.length,<br>    totalAwaitingApproval: scriptReadyCount.length,<br>    checkTime: today.toLocaleString()<br>  }<br>}];"
+      },
+      "id": "analyze-status-changes",
+      "name": "Analyze Status Changes",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [600, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false
+          },
+          "conditions": [
+            {
+              "id": "has-approved-scripts",
+              "leftValue": "={{ $json.totalApproved }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ]
+        }
+      },
+      "id": "if-approved-scripts",
+      "name": "IF Has Approved Scripts",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [800, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false
+          },
+          "conditions": [
+            {
+              "id": "has-overdue-videos",
+              "leftValue": "={{ $json.totalOverdue }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ]
+        }
+      },
+      "id": "if-overdue-videos",
+      "name": "IF Has Overdue Videos",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [800, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false
+          },
+          "conditions": [
+            {
+              "id": "scripts-awaiting-approval",
+              "leftValue": "={{ $json.totalAwaitingApproval }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ]
+        }
+      },
+      "id": "if-scripts-awaiting",
+      "name": "IF Scripts Awaiting Approval",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [800, 600]
+    },
+    {
+      "parameters": {
+        "chatId": "789387521",
+        "text": "🎬 <b>SCRIPT APPROVED - PRODUCTION STARTING<b>\<br>\<br>{{ $json.approvedScripts.map(item => '✅ <b>' + item.video_id + '<b>: ' + item.title + '\<br>💡 Concept: ' + item.selected_concept + '\<br>📂 Folder: Ready for production').join('\<br>\<br>') }}\<br>\<br>🚀 <b>Next Steps:<b>\<br>• Sentence breakdown created with {{ $json.approvedScripts.length > 0 ? '47+' : '0' }} image prompts\<br>• Production team can begin image creation\<br>• Audio generation ready to start\<br>• SEO content prepared\<br>\<br>📊 <b>Status Updated:<b> Script approved → Production phase\<br>⏰ <b>Notification:<b> {{ $json.checkTime }}",
+        "additionalFields": {
+          "parse_mode: HTML"
+        }
+      },
+      "id": "telegram-approved-scripts",
+      "name": "Telegram - Scripts Approved",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [1000, 200]
+    },
+    {
+      "parameters": {
+        "chatId": "789387521",
+        "text": "🚨 <b>OVERDUE VIDEOS ALERT<b>\<br>\<br>{{ $json.overdueVideos.map(item => '🔴 <b>' + item.video_id + '<b>: ' + item.title + '\<br>📅 Due: ' + item.due_date + '\<br>⏰ Overdue: ' + item.days_overdue + ' days\<br>👤 Assigned: ' + item.assigned + '\<br>🚩 Priority: ' + item.priority).join('\<br>\<br>') }}\<br>\<br>⚠️ <b>Action Required:<b>\<br>• Review project status with assigned editors\<br>• Update due dates if needed\<br>• Escalate priority items\<br>• Check for blockers or resource issues\<br>\<br>📊 <b>Total Overdue:<b> {{ $json.totalOverdue }} videos\<br>⏰ <b>Alert Time:<b> {{ $json.checkTime }}",
+        "additionalFields": {
+          "parse_mode: HTML"
+        }
+      },
+      "id": "telegram-overdue-alert",
+      "name": "Telegram - Overdue Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [1000, 400]
+    },
+    {
+      "parameters": {
+        "chatId": "789387521",
+        "text": "⏳ <b>SCRIPTS AWAITING APPROVAL<b>\<br>\<br>{{ $json.scriptReadyCount.map(item => '📝 <b>' + item.video_id + '<b>: ' + item.title + '\<br>⏰ Waiting: ' + item.waiting_since).join('\<br>\<br>') }}\<br>\<br>👀 <b>Action Needed:<b>\<br>• Review enhanced scripts in production workbooks\<br>• Update Script_Status column to ✅ Approved or ❌ Needs Revision\<br>• Scripts have been optimized with selected concepts\<br>• All SEO content and breakdowns are ready\<br>\<br>📊 <b>Total Awaiting:<b> {{ $json.totalAwaitingApproval }} scripts\<br>⏰ <b>Reminder:<b> {{ $json.checkTime }}",
+        "additionalFields": {
+          "parse_mode: HTML"
+        }
+      },
+      "id": "telegram-awaiting-approval",
+      "name": "Telegram - Scripts Awaiting Approval",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [1000, 600]
+    }
+  ],
+  "connections": {
+    "Monitor Every 4 Hours": {
+      "main": [
+        [
+          {
+            "node": "Read Master Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Master Sheet": {
+      "main": [
+        [
+          {
+            "node": "Analyze Status Changes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze Status Changes": {
+      "main": [
+        [
+          {
+            "node": "IF Has Approved Scripts",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "IF Has Overdue Videos",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "IF Scripts Awaiting Approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Has Approved Scripts": {
+      "main": [
+        [
+          {
+            "node": "Telegram - Scripts Approved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Has Overdue Videos": {
+      "main": [
+        [
+          {
+            "node": "Telegram - Overdue Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Scripts Awaiting Approval": {
+      "main": [
+        [
+          {
+            "node": "Telegram - Scripts Awaiting Approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": ["youtube", "monitoring", "completion"],
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "versionId": "1"
+}

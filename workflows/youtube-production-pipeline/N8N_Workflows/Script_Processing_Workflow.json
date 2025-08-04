@@ -1,0 +1,698 @@
+{
+  "name": "YouTube Production - Script Processing & Content Generation",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "value": 15
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Check Every 15 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "sheet",
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "1yas-xnO7vhj4iZhO7baekkClq6Ca6YYbD3qjOdI53Qg",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Master_Queue",
+          "mode": "name"
+        },
+        "range": "A:U",
+        "keyRow": 1,
+        "dataStartRow": 2
+      },
+      "id": "read-master-sheet",
+      "name": "Read Master Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.6,
+      "position": [
+        400,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Find videos with selected ideas that need script generation\nconst items = [];\n\nfor (const item of $input.all()) {\n  const status = item.json['Status'];\n  const selectedIdea = item.json['Selected_Idea'];\n  const scriptStatus = item.json['Script_Status'];\n  \n  // Look for videos where idea is selected but script not generated\n  if (status === '🟡 Ideas Ready' && selectedIdea && selectedIdea !== '' && scriptStatus === '⏳ Pending') {\n    // Determine which AI idea was selected\n    let selectedIdeaText = '';\n    switch(selectedIdea) {\n      case 'Option 1':\n        selectedIdeaText = item.json['AI_Idea_1'] || '';\n        break;\n      case 'Option 2':\n        selectedIdeaText = item.json['AI_Idea_2'] || '';\n        break;\n      case 'Option 3':\n        selectedIdeaText = item.json['AI_Idea_3'] || '';\n        break;\n    }\n    \n    if (selectedIdeaText) {\n      items.push({\n        json: {\n          ...item.json,\n          selectedIdeaText: selectedIdeaText,\n          rowIndex: item.json.__rowIndex || items.length + 2\n        }\n      });\n      \n      // Process one at a time\n      break;\n    }\n  }\n}\n\nif (items.length === 0) {\n  return [{\n    json: {\n      noScriptsToGenerate: true,\n      message: 'No scripts to generate'\n    }\n  }];\n}\n\nreturn items;"
+      },
+      "id": "filter-selected-ideas",
+      "name": "Filter Videos with Selected Ideas",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        600,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false
+          },
+          "conditions": [
+            {
+              "id": "needs-script-generation",
+              "leftValue": "={{ $json.noScriptsToGenerate }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "notEquals"
+              }
+            }
+          ]
+        }
+      },
+      "id": "if-needs-script",
+      "name": "IF Needs Script Generation",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        800,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4",
+          "mode": "id"
+        },
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a professional YouTube script writer. Rewrite this video content based on the selected improvement idea. Create an enhanced, engaging script that:\n\n- Is more attractive and compelling\n- Targets the specific audience effectively\n- Has strong storytelling elements\n- Includes clear value propositions\n- Uses engaging hooks and transitions\n- Is optimized for YouTube engagement\n\nStructure the script with clear sections: Hook, Introduction, Main Content, and Call to Action.\n\nSelected Improvement Direction: {{ $json.selectedIdeaText }}"
+            },
+            {
+              "role": "user",
+              "content": "Original Video Title: {{ $json.Video_Title }}\nSelected Concept: {{ $json.selectedIdeaText }}\n\nPlease create an enhanced, engaging script that follows the selected concept direction. Make it professional, compelling, and optimized for YouTube success."
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.8,
+          "maxTokens": 3000
+        }
+      },
+      "id": "generate-enhanced-script",
+      "name": "Generate Enhanced Script",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        1000,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4",
+          "mode": "id"
+        },
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "Break this script into individual sentences and create specific image prompts for each sentence. For each sentence:\n\n1. Extract 2-4 key words to emphasize\n2. Assign a visual cue (emoji + description)\n3. Create a detailed image prompt\n4. Provide specific editing instructions\n\nFormat as JSON array:\n[{\n  \"sentence_number\": \"001\",\n  \"script_text\": \"sentence text\",\n  \"keywords\": \"word1, word2, word3\",\n  \"visual_cues\": \"🎯 Promise emphasis\",\n  \"image_prompt\": \"detailed prompt\",\n  \"scene_type\": \"Hook/Introduction/Instruction/Demonstration\",\n  \"edit_notes\": \"specific editing instructions\"\n}]"
+            },
+            {
+              "role": "user",
+              "content": "Enhanced Script:\n{{ $('Generate Enhanced Script').item.json.content || $('Generate Enhanced Script').item.json.message?.content }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.3,
+          "maxTokens": 4000
+        }
+      },
+      "id": "create-sentence-breakdown",
+      "name": "Create Sentence Breakdown",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        1200,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4",
+          "mode": "id"
+        },
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "Create SEO-optimized YouTube content based on this enhanced script:\n\n1. **5 Title Variations** (60-100 chars each):\n   - Main title (most SEO optimized)\n   - Alternative 1 (high CTR focused)\n   - Alternative 2 (curiosity-driven)\n   - YouTube Shorts version\n   - Clickbait version\n\n2. **Optimized Description** with:\n   - Hook in first 125 characters\n   - Value proposition bullets\n   - Timestamps (estimate based on content)\n   - Resources section\n   - SEO hashtags\n\n3. **3 Thumbnail Concepts** with descriptions\n\nFormat as structured JSON with all components."
+            },
+            {
+              "role": "user",
+              "content": "Video Title: {{ $('Filter Videos with Selected Ideas').item.json.Video_Title }}\nEnhanced Script: {{ $('Generate Enhanced Script').item.json.content || $('Generate Enhanced Script').item.json.message?.content }}\nSelected Concept: {{ $('Filter Videos with Selected Ideas').item.json.selectedIdeaText }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.7,
+          "maxTokens": 2000
+        }
+      },
+      "id": "generate-seo-content",
+      "name": "Generate SEO Content",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        1400,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "resource": "folder",
+        "name": "={{ $('Filter Videos with Selected Ideas').item.json.Video_ID }}_{{ $('Filter Videos with Selected Ideas').item.json.Video_Title.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 50) }}",
+        "parents": {
+          "parent": "1Q2W3E4R5T6Y7U8I9O0P"
+        },
+        "options": {
+          "permissions": [
+            {
+              "role": "writer",
+              "type": "user",
+              "emailAddress": "ryan.merchize@gmail.com"
+            }
+          ]
+        }
+      },
+      "id": "create-video-folder",
+      "name": "Create Video Folder",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        1600,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "copy",
+        "resource": "file",
+        "fileId": "1TEMPLATE_WORKBOOK_ID_REPLACE_THIS",
+        "options": {
+          "name": "={{ $('Filter Videos with Selected Ideas').item.json.Video_ID }}_Production_Workbook",
+          "parents": ["={{ $('Create Video Folder').item.json.id }}"],
+          "permissions": [
+            {
+              "role": "writer",
+              "type": "user",
+              "emailAddress": "ryan.merchize@gmail.com"
+            }
+          ]
+        }
+      },
+      "id": "create-production-workbook",
+      "name": "Create Production Workbook",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        1800,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "sheet",
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1yas-xnO7vhj4iZhO7baekkClq6Ca6YYbD3qjOdI53Qg",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Master_Queue",
+          "mode": "name"
+        },
+        "columnToMatchOn": "Video_ID",
+        "valueToMatchOn": "={{ $('Filter Videos with Selected Ideas').item.json.Video_ID }}",
+        "dataMode": "define",
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "Status",
+              "fieldValue": "🟠 Script Ready"
+            },
+            {
+              "column": "Script_Status",
+              "fieldValue": "🔄 Review Required"
+            },
+            {
+              "column": "Video_Folder_URL",
+              "fieldValue": "=https://drive.google.com/drive/folders/{{ $('Create Video Folder').item.json.id }}"
+            }
+          ]
+        }
+      },
+      "id": "update-master-sheet-script",
+      "name": "Update Master Sheet - Script Ready",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.6,
+      "position": [
+        1600,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "789387521",
+        "text": "📝 <b>SCRIPT READY FOR REVIEW</b>\n\n🎬 <b>Video:</b> {{ $('Filter Videos with Selected Ideas').item.json.Video_Title }}\n🆔 <b>ID:</b> {{ $('Filter Videos with Selected Ideas').item.json.Video_ID }}\n💡 <b>Selected Concept:</b> {{ $('Filter Videos with Selected Ideas').item.json.selectedIdeaText }}\n\n📊 <b>Generated Content:</b>\n• ✅ Enhanced Script\n• ✅ Sentence-by-sentence breakdown\n• ✅ Image prompts for each sentence\n• ✅ SEO titles & description\n• ✅ Thumbnail concepts\n\n📂 <b>Production Folder:</b> Created with all assets\n\n👀 <b>Next Step:</b> Review script in the production workbook and update Script_Status to approve or request changes\n\n⏰ <b>Generated:</b> {{ new Date().toLocaleString() }}",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "telegram-script-ready",
+      "name": "Telegram - Script Ready Notification",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1800,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare all workbook data for population\nconst workbookId = $('Create Production Workbook').item.json.id;\nconst videoData = $('Filter Videos with Selected Ideas').item.json;\nconst enhancedScript = $('Generate Enhanced Script').item.json.content || $('Generate Enhanced Script').item.json.message?.content || '';\nconst sentenceBreakdown = $('Create Sentence Breakdown').item.json.content || $('Create Sentence Breakdown').item.json.message?.content || '';\nconst seoContent = $('Generate SEO Content').item.json.content || $('Generate SEO Content').item.json.message?.content || '';\n\n// Parse sentence breakdown for Image Prompts\nlet imagePromptsData = [];\ntry {\n  const jsonMatch = sentenceBreakdown.match(/\\[.*\\]/s);\n  if (jsonMatch) {\n    const sentences = JSON.parse(jsonMatch[0]);\n    imagePromptsData = sentences.slice(0, 15).map((s, index) => ({\n      sentence_number: s.sentence_number || String(index + 1).padStart(3, '0'),\n      script_text: (s.script_text || '').substring(0, 200),\n      keywords: s.keywords || 'keyword1, keyword2, keyword3',\n      visual_cues: s.visual_cues || '🎯 Main focus',\n      image_prompt: s.image_prompt || 'Create engaging visual',\n      scene_type: s.scene_type || 'Main Content',\n      edit_notes: s.edit_notes || 'Review and enhance'\n    }));\n  } else {\n    // Fallback: split script into sentences\n    const sentences = enhancedScript.split(/[.!?]+/).filter(s => s.trim().length > 20);\n    imagePromptsData = sentences.slice(0, 10).map((sentence, index) => ({\n      sentence_number: String(index + 1).padStart(3, '0'),\n      script_text: sentence.trim().substring(0, 200),\n      keywords: 'video, content, engaging',\n      visual_cues: '🎯 Focus point',\n      image_prompt: `Create visual for: ${sentence.trim().substring(0, 100)}`,\n      scene_type: index === 0 ? 'Hook' : index < 3 ? 'Introduction' : 'Main Content',\n      edit_notes: 'Add visual elements'\n    }));\n  }\n} catch (e) {\n  console.log('Error parsing sentence breakdown:', e);\n  imagePromptsData = [{\n    sentence_number: '001',\n    script_text: 'Sample script content',\n    keywords: 'sample, content, video',\n    visual_cues: '🎯 Main focus',\n    image_prompt: 'Create engaging visual for main concept',\n    scene_type: 'Hook',\n    edit_notes: 'Add dynamic elements'\n  }];\n}\n\n// Parse SEO content\nlet seoData = [];\ntry {\n  const lines = seoContent.split('\\n').filter(line => line.trim());\n  let titleCount = 0;\n  let thumbnailCount = 0;\n  \n  for (const line of lines) {\n    if ((line.includes('title') || line.includes('Title') || line.match(/^\\d+[.)]/)) && titleCount < 5) {\n      seoData.push({\n        type: `Title ${titleCount + 1}`,\n        content: line.replace(/^[-\\d.)]*/g, '').trim().substring(0, 100),\n        length: line.length,\n        ctr_focus: titleCount === 0 ? 'SEO Optimized' : titleCount === 1 ? 'High CTR' : titleCount === 2 ? 'Curiosity' : 'Shorts',\n        notes: `AI generated title variation ${titleCount + 1}`\n      });\n      titleCount++;\n    } else if ((line.includes('thumbnail') || line.includes('Thumbnail')) && thumbnailCount < 3) {\n      seoData.push({\n        type: `Thumbnail ${thumbnailCount + 1}`,\n        content: line.replace(/^[-\\d.)]*/g, '').trim().substring(0, 150),\n        length: line.length,\n        ctr_focus: 'Visual Appeal',\n        notes: `Thumbnail concept ${thumbnailCount + 1}`\n      });\n      thumbnailCount++;\n    }\n  }\n  \n  // Add description if not found\n  if (!seoData.some(item => item.type === 'Description')) {\n    seoData.push({\n      type: 'Description',\n      content: 'SEO-optimized description with hooks, value props, timestamps, and hashtags',\n      length: 125,\n      ctr_focus: 'SEO + Engagement',\n      notes: 'Include call-to-action and relevant hashtags'\n    });\n  }\n} catch (e) {\n  console.log('Error parsing SEO content:', e);\n  seoData = [{\n    type: 'Main Title',\n    content: videoData.Video_Title,\n    length: videoData.Video_Title.length,\n    ctr_focus: 'Original',\n    notes: 'Original video title from URL'\n  }];\n}\n\n// Production timeline template\nconst timelineData = [\n  { task: 'Script Review & Approval', assigned_to: 'Content Manager', due_date: '', status: '⏳ Pending Review', priority: '🔴 High', notes: 'Review AI-generated script and approve for production' },\n  { task: 'Storyboard Creation', assigned_to: 'Creative Director', due_date: '', status: '⏳ Pending', priority: '🟡 Medium', notes: 'Create visual storyboard from image prompts' },\n  { task: 'Asset Creation', assigned_to: 'Designer', due_date: '', status: '⏳ Pending', priority: '🟡 Medium', notes: 'Create images, graphics, and visual elements' },\n  { task: 'Video Recording', assigned_to: 'Video Creator', due_date: '', status: '⏳ Pending', priority: '🔴 High', notes: 'Record video following approved script' },\n  { task: 'Video Editing', assigned_to: 'Video Editor', due_date: '', status: '⏳ Pending', priority: '🔴 High', notes: 'Edit video with assets and transitions' },\n  { task: 'Thumbnail Design', assigned_to: 'Graphic Designer', due_date: '', status: '⏳ Pending', priority: '🟡 Medium', notes: 'Create compelling thumbnail from concepts' },\n  { task: 'SEO Optimization', assigned_to: 'Content Strategist', due_date: '', status: '⏳ Pending', priority: '🟡 Medium', notes: 'Finalize title, description, and tags' },\n  { task: 'Quality Review', assigned_to: 'Project Manager', due_date: '', status: '⏳ Pending', priority: '🔴 High', notes: 'Final quality check and approval' },\n  { task: 'YouTube Upload', assigned_to: 'Content Manager', due_date: '', status: '⏳ Pending', priority: '🔴 High', notes: 'Upload to YouTube and schedule publication' }\n];\n\nreturn [{\n  json: {\n    workbookId: workbookId,\n    videoInfo: {\n      videoId: videoData.Video_ID,\n      videoTitle: videoData.Video_Title,\n      selectedConcept: videoData.selectedIdeaText,\n      youtubeUrl: videoData.YouTube_URL\n    },\n    scriptContent: {\n      section: 'Enhanced Script',\n      content: enhancedScript,\n      timestamp: new Date().toISOString(),\n      notes: `AI-enhanced script based on concept: ${videoData.selectedIdeaText}`,\n      status: '📝 Draft Ready for Review'\n    },\n    imagePromptsData: imagePromptsData,\n    seoData: seoData,\n    timelineData: timelineData\n  }\n}];"
+      },
+      "id": "prepare-workbook-data",
+      "name": "Prepare Workbook Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, 100]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "sheet",
+        "operation": "append",
+        "documentId": "={{ $json.workbookId }}",
+        "sheetName": {
+          "__rl": true,
+          "value": "Script_Content",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Video_ID": "={{ $json.videoInfo.videoId }}",
+            "Video_Title": "={{ $json.videoInfo.videoTitle }}",
+            "Selected_Concept": "={{ $json.videoInfo.selectedConcept }}",
+            "Script_Section": "={{ $json.scriptContent.section }}",
+            "Content": "={{ $json.scriptContent.content }}",
+            "Timestamp": "={{ $json.scriptContent.timestamp }}",
+            "Notes": "={{ $json.scriptContent.notes }}",
+            "Status": "={{ $json.scriptContent.status }}"
+          }
+        }
+      },
+      "id": "populate-script-content",
+      "name": "Populate Script Content",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.6,
+      "position": [2200, 80]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Split image prompts into individual items for batch insert\nconst workbookId = $json.workbookId;\nconst imagePrompts = $json.imagePromptsData;\n\nconst items = imagePrompts.map(prompt => ({\n  json: {\n    workbookId: workbookId,\n    sentence_number: prompt.sentence_number,\n    script_text: prompt.script_text,\n    keywords: prompt.keywords,\n    visual_cues: prompt.visual_cues,\n    image_prompt: prompt.image_prompt,\n    scene_type: prompt.scene_type,\n    edit_notes: prompt.edit_notes\n  }\n}));\n\nreturn items;"
+      },
+      "id": "split-image-prompts",
+      "name": "Split Image Prompts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2200, 120]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "sheet",
+        "operation": "append",
+        "documentId": "={{ $json.workbookId }}",
+        "sheetName": {
+          "__rl": true,
+          "value": "Image_Prompts",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Sentence_Number": "={{ $json.sentence_number }}",
+            "Script_Text": "={{ $json.script_text }}",
+            "Keywords": "={{ $json.keywords }}",
+            "Visual_Cues": "={{ $json.visual_cues }}",
+            "Image_Prompt": "={{ $json.image_prompt }}",
+            "Scene_Type": "={{ $json.scene_type }}",
+            "Edit_Notes": "={{ $json.edit_notes }}"
+          }
+        }
+      },
+      "id": "populate-image-prompts",
+      "name": "Populate Image Prompts",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.6,
+      "position": [2400, 120]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Split SEO data and timeline data for separate population\nconst workbookId = $json.workbookId;\nconst seoData = $json.seoData;\nconst timelineData = $json.timelineData;\n\n// Create items for SEO content\nconst seoItems = seoData.map(item => ({\n  json: {\n    workbookId: workbookId,\n    type: 'seo',\n    seo_type: item.type,\n    content: item.content,\n    length: item.length,\n    ctr_focus: item.ctr_focus,\n    notes: item.notes\n  }\n}));\n\n// Create items for timeline\nconst timelineItems = timelineData.map(item => ({\n  json: {\n    workbookId: workbookId,\n    type: 'timeline',\n    task: item.task,\n    assigned_to: item.assigned_to,\n    due_date: item.due_date,\n    status: item.status,\n    priority: item.priority,\n    notes: item.notes\n  }\n}));\n\n// Return combined items\nreturn [...seoItems, ...timelineItems];"
+      },
+      "id": "split-seo-timeline",
+      "name": "Split SEO & Timeline",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2200, 160]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false
+          },
+          "conditions": [
+            {
+              "id": "is-seo-type",
+              "leftValue": "={{ $json.type }}",
+              "rightValue": "seo",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      },
+      "id": "if-seo-content",
+      "name": "IF SEO Content",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2400, 160]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "sheet",
+        "operation": "append",
+        "documentId": "={{ $json.workbookId }}",
+        "sheetName": {
+          "__rl": true,
+          "value": "SEO_Content",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Type": "={{ $json.seo_type }}",
+            "Content": "={{ $json.content }}",
+            "Length": "={{ $json.length }}",
+            "CTR_Focus": "={{ $json.ctr_focus }}",
+            "Notes": "={{ $json.notes }}"
+          }
+        }
+      },
+      "id": "populate-seo-content",
+      "name": "Populate SEO Content",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.6,
+      "position": [2600, 140]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "sheet",
+        "operation": "append",
+        "documentId": "={{ $json.workbookId }}",
+        "sheetName": {
+          "__rl": true,
+          "value": "Production_Timeline",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Task": "={{ $json.task }}",
+            "Assigned_To": "={{ $json.assigned_to }}",
+            "Due_Date": "={{ $json.due_date }}",
+            "Status": "={{ $json.status }}",
+            "Priority": "={{ $json.priority }}",
+            "Notes": "={{ $json.notes }}"
+          }
+        }
+      },
+      "id": "populate-timeline",
+      "name": "Populate Timeline",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.6,
+      "position": [2600, 180]
+    }
+  ],
+  "connections": {
+    "Check Every 15 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Read Master Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Master Sheet": {
+      "main": [
+        [
+          {
+            "node": "Filter Videos with Selected Ideas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Videos with Selected Ideas": {
+      "main": [
+        [
+          {
+            "node": "IF Needs Script Generation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Needs Script Generation": {
+      "main": [
+        [
+          {
+            "node": "Generate Enhanced Script",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Enhanced Script": {
+      "main": [
+        [
+          {
+            "node": "Create Sentence Breakdown",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Sentence Breakdown": {
+      "main": [
+        [
+          {
+            "node": "Generate SEO Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate SEO Content": {
+      "main": [
+        [
+          {
+            "node": "Create Video Folder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Video Folder": {
+      "main": [
+        [
+          {
+            "node": "Create Production Workbook",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Update Master Sheet - Script Ready",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Production Workbook": {
+      "main": [
+        [
+          {
+            "node": "Prepare Workbook Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Workbook Data": {
+      "main": [
+        [
+          {
+            "node": "Populate Script Content",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Split Image Prompts",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Split SEO & Timeline",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Populate Script Content": {
+      "main": [
+        []
+      ]
+    },
+    "Split Image Prompts": {
+      "main": [
+        [
+          {
+            "node": "Populate Image Prompts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Populate Image Prompts": {
+      "main": [
+        []
+      ]
+    },
+    "Split SEO & Timeline": {
+      "main": [
+        [
+          {
+            "node": "IF SEO Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF SEO Content": {
+      "main": [
+        [
+          {
+            "node": "Populate SEO Content",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Populate Timeline",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Populate SEO Content": {
+      "main": [
+        []
+      ]
+    },
+    "Populate Timeline": {
+      "main": [
+        []
+      ]
+    },
+    "Update Master Sheet - Script Ready": {
+      "main": [
+        [
+          {
+            "node": "Telegram - Script Ready Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    "youtube",
+    "script-generation",
+    "content"
+  ],
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

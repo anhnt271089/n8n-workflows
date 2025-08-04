@@ -45,3 +45,4 @@ logs/
 # Credentials (security)
 credentials.json
 secrets.json
+.velite

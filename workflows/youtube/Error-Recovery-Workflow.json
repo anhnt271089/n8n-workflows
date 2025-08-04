@@ -1,0 +1,793 @@
+{
+  "name": "YouTube Error Recovery & Dead Letter Queue Handler",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 4
+            }
+          ]
+        }
+      },
+      "id": "schedule-recovery",
+      "name": "Recovery Schedule (4h)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "sheet",
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "1q7n6-F7Ji2Vz6U_tS9f7z9hxnPx1bucOeNIO4S5-qZg",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Video",
+          "mode": "name"
+        },
+        "range": "A:F",
+        "keyRow": 1,
+        "dataStartRow": 2
+      },
+      "id": "scan-for-errors",
+      "name": "Scan for Error Items",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [400, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Identify items that need recovery\nconst items = [];\nconst now = new Date();\nconst RECOVERY_COOLDOWN = 2 * 60 * 60 * 1000; // 2 hours in milliseconds\n\nfor (const item of $input.all()) {\n  const status = item.json['Status'];\n  const errorStatus = item.json['Error_Status'];\n  const lastUpdated = item.json['Last_Updated'];\n  const youtubeUrl = item.json['YouTube URL'];\n  \n  // Skip if no URL or already done\n  if (!youtubeUrl || status === 'Done') {\n    continue;\n  }\n  \n  // Identify recovery candidates\n  const needsRecovery = (\n    // Items with retryable errors\n    (errorStatus === 'RETRYING' || errorStatus === 'FALLBACK_USED' || errorStatus === 'UPDATE_FAILED') ||\n    // Items stuck in processing\n    (status === 'Processing' && lastUpdated && (now - new Date(lastUpdated)) > RECOVERY_COOLDOWN) ||\n    // Items with no status\n    (!status || status === '')\n  );\n  \n  if (needsRecovery) {\n    // Extract video ID\n    let videoId = null;\n    const patterns = [\n      /(?:youtube\\.com\\/watch\\?v=|youtu\\.be\\/|youtube\\.com\\/embed\\/)([^&\\n?#]+)/,\n      /^([a-zA-Z0-9_-]{11})$/\n    ];\n    \n    for (const pattern of patterns) {\n      const match = youtubeUrl.match(pattern);\n      if (match) {\n        videoId = match[1];\n        break;\n      }\n    }\n    \n    if (videoId) {\n      items.push({\n        json: {\n          ...item.json,\n          videoId: videoId,\n          rowIndex: item.json.__rowIndex,\n          recoveryReason: determineRecoveryReason(status, errorStatus, lastUpdated, now),\n          originalErrorStatus: errorStatus,\n          recoveryAttemptTime: now.toISOString()\n        }\n      });\n    }\n  }\n}\n\nfunction determineRecoveryReason(status, errorStatus, lastUpdated, now) {\n  if (errorStatus === 'RETRYING') return 'retry_timeout';\n  if (errorStatus === 'FALLBACK_USED') return 'fallback_revalidation';\n  if (errorStatus === 'UPDATE_FAILED') return 'update_retry';\n  if (status === 'Processing' && lastUpdated && (now - new Date(lastUpdated)) > 2 * 60 * 60 * 1000) {\n    return 'stuck_processing';\n  }\n  if (!status || status === '') return 'missing_status';\n  return 'unknown';\n}\n\nconsole.log(`Found ${items.length} items requiring recovery`);\n\nif (items.length === 0) {\n  return [{ json: { message: 'No items require recovery', itemCount: 0 } }];\n}\n\nreturn items;"
+      },
+      "id": "identify-recovery-items",
+      "name": "Identify Recovery Items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [580, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-recovery-items",
+              "leftValue": "={{ $json.itemCount }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-has-recovery-items",
+      "name": "IF Has Recovery Items",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [760, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Classify recovery items by type and priority\nconst item = $input.item.json;\nconst recoveryReason = item.recoveryReason;\n\n// Determine recovery strategy\nlet recoveryStrategy = 'standard';\nlet priority = 'medium';\nlet maxAttempts = 3;\n\nswitch (recoveryReason) {\n  case 'retry_timeout':\n    recoveryStrategy = 'reset_and_retry';\n    priority = 'high';\n    maxAttempts = 2;\n    break;\n  case 'fallback_revalidation':\n    recoveryStrategy = 'api_revalidation';\n    priority = 'medium';\n    maxAttempts = 1;\n    break;\n  case 'update_failed':\n    recoveryStrategy = 'force_update';\n    priority = 'high';\n    maxAttempts = 3;\n    break;\n  case 'stuck_processing':\n    recoveryStrategy = 'reset_and_retry';\n    priority = 'high';\n    maxAttempts = 2;\n    break;\n  case 'missing_status':\n    recoveryStrategy = 'full_reprocess';\n    priority = 'medium';\n    maxAttempts = 1;\n    break;\n  default:\n    recoveryStrategy = 'diagnostic';\n    priority = 'low';\n    maxAttempts = 1;\n}\n\nreturn [{\n  json: {\n    ...item,\n    recoveryStrategy: recoveryStrategy,\n    priority: priority,\n    maxRecoveryAttempts: maxAttempts,\n    recoveryStartTime: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "classify-recovery-type",
+      "name": "Classify Recovery Type",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [940, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "is-reset-retry",
+              "leftValue": "={{ $json.recoveryStrategy }}",
+              "rightValue": "reset_and_retry",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-reset-retry",
+      "name": "IF Reset & Retry",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1120, 200]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "sheet",
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1q7n6-F7Ji2Vz6U_tS9f7z9hxnPx1bucOeNIO4S5-qZg",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Video",
+          "mode": "name"
+        },
+        "columnToMatchOn": "YouTube URL",
+        "valueToMatchOn": "={{ $json['YouTube URL'] }}",
+        "dataMode": "define",
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "Status",
+              "fieldValue": "Recovery_Processing"
+            },
+            {
+              "column": "Error_Status",
+              "fieldValue": "RECOVERY_IN_PROGRESS"
+            },
+            {
+              "column": "Last_Updated",
+              "fieldValue": "={{ $json.recoveryStartTime }}"
+            }
+          ]
+        }
+      },
+      "id": "reset-status",
+      "name": "Reset Status for Retry",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [1300, 100]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "is-api-revalidation",
+              "leftValue": "={{ $json.recoveryStrategy }}",
+              "rightValue": "api_revalidation",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-api-revalidation",
+      "name": "IF API Revalidation",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "url": "=https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={{ $json.videoId }}&format=json",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "revalidate-youtube-data",
+      "name": "Revalidate YouTube Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1300, 200],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process revalidation results\nconst item = $input.item.json;\nconst youtubeResponse = $('Revalidate YouTube Data').item.json;\n\nlet newStatus = 'Processing';\nlet newErrorStatus = 'OK';\nlet shouldUpdateData = false;\n\nif (youtubeResponse && !youtubeResponse.error && youtubeResponse.title) {\n  // API call succeeded - update with fresh data\n  shouldUpdateData = true;\n  console.log(`Revalidation successful for video ${item.videoId}`);\n} else {\n  // API still failing - keep fallback data but mark as validated\n  console.log(`Revalidation failed for video ${item.videoId}, keeping fallback data`);\n  newErrorStatus = 'REVALIDATION_FAILED';\n}\n\nreturn [{\n  json: {\n    ...item,\n    newStatus: newStatus,\n    newErrorStatus: newErrorStatus,\n    shouldUpdateData: shouldUpdateData,\n    revalidationResponse: youtubeResponse,\n    recoveryCompleteTime: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "process-revalidation",
+      "name": "Process Revalidation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1480, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "should-update-data",
+              "leftValue": "={{ $json.shouldUpdateData }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-should-update-data",
+      "name": "IF Should Update Data",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1660, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract updated data from revalidation\nconst item = $input.item.json;\nconst revalidationData = item.revalidationResponse;\n\nlet title = item.Title || `Video ${item.videoId}`;\nlet description = item.Description || 'Description not available';\nlet thumbnail = item.Thumbnail || `https://img.youtube.com/vi/${item.videoId}/maxresdefault.jpg`;\n\nif (revalidationData && revalidationData.title) {\n  title = revalidationData.title;\n  description = revalidationData.author_name \n    ? `Video by ${revalidationData.author_name}: ${revalidationData.title}` \n    : `Updated content: ${revalidationData.title}`;\n  thumbnail = `https://img.youtube.com/vi/${item.videoId}/maxresdefault.jpg`;\n}\n\nreturn [{\n  json: {\n    ...item,\n    updatedTitle: title,\n    updatedDescription: description,\n    updatedThumbnail: thumbnail\n  }\n}];"
+      },
+      "id": "extract-updated-data",
+      "name": "Extract Updated Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1840, 100]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "sheet",
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1q7n6-F7Ji2Vz6U_tS9f7z9hxnPx1bucOeNIO4S5-qZg",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Video",
+          "mode": "name"
+        },
+        "columnToMatchOn": "YouTube URL",
+        "valueToMatchOn": "={{ $json['YouTube URL'] }}",
+        "dataMode": "define",
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "Title",
+              "fieldValue": "={{ $json.updatedTitle }}"
+            },
+            {
+              "column": "Description",
+              "fieldValue": "={{ $json.updatedDescription }}"
+            },
+            {
+              "column": "Thumbnail",
+              "fieldValue": "={{ $json.updatedThumbnail }}"
+            },
+            {
+              "column": "Status",
+              "fieldValue": "Done"
+            },
+            {
+              "column": "Error_Status",
+              "fieldValue": "RECOVERED"
+            },
+            {
+              "column": "Last_Updated",
+              "fieldValue": "={{ $json.recoveryCompleteTime }}"
+            }
+          ]
+        }
+      },
+      "id": "update-with-fresh-data",
+      "name": "Update with Fresh Data",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [2020, 100],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "sheet",
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1q7n6-F7Ji2Vz6U_tS9f7z9hxnPx1bucOeNIO4S5-qZg",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Video",
+          "mode": "name"
+        },
+        "columnToMatchOn": "YouTube URL",
+        "valueToMatchOn": "={{ $json['YouTube URL'] }}",
+        "dataMode": "define",
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "Status",
+              "fieldValue": "={{ $json.newStatus }}"
+            },
+            {
+              "column": "Error_Status",
+              "fieldValue": "={{ $json.newErrorStatus }}"
+            },
+            {
+              "column": "Last_Updated",
+              "fieldValue": "={{ $json.recoveryCompleteTime }}"
+            }
+          ]
+        }
+      },
+      "id": "update-status-only",
+      "name": "Update Status Only",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [1840, 300],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "is-force-update",
+              "leftValue": "={{ $json.recoveryStrategy }}",
+              "rightValue": "force_update",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-force-update",
+      "name": "IF Force Update",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1120, 400]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "sheet",
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1q7n6-F7Ji2Vz6U_tS9f7z9hxnPx1bucOeNIO4S5-qZg",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Video",
+          "mode": "name"
+        },
+        "columnToMatchOn": "YouTube URL",
+        "valueToMatchOn": "={{ $json['YouTube URL'] }}",
+        "dataMode": "define",
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "Status",
+              "fieldValue": "Done"
+            },
+            {
+              "column": "Error_Status",
+              "fieldValue": "FORCE_RECOVERED"
+            },
+            {
+              "column": "Last_Updated",
+              "fieldValue": "={{ $json.recoveryStartTime }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 45000
+        }
+      },
+      "id": "force-update-complete",
+      "name": "Force Update Complete",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [1300, 400],
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generate recovery summary report\nconst processedItems = $input.all();\nconst recoveryStats = {\n  totalProcessed: processedItems.length,\n  byStrategy: {},\n  byPriority: {},\n  successful: 0,\n  failed: 0,\n  recoveryStartTime: processedItems[0]?.json?.recoveryStartTime,\n  recoveryEndTime: new Date().toISOString()\n};\n\nfor (const item of processedItems) {\n  const data = item.json;\n  \n  // Count by strategy\n  const strategy = data.recoveryStrategy || 'unknown';\n  recoveryStats.byStrategy[strategy] = (recoveryStats.byStrategy[strategy] || 0) + 1;\n  \n  // Count by priority\n  const priority = data.priority || 'unknown';\n  recoveryStats.byPriority[priority] = (recoveryStats.byPriority[priority] || 0) + 1;\n  \n  // Count success/failure (simplified - assume success if no error)\n  if (data.error) {\n    recoveryStats.failed++;\n  } else {\n    recoveryStats.successful++;\n  }\n}\n\nconst duration = recoveryStats.recoveryEndTime && recoveryStats.recoveryStartTime\n  ? Math.round((new Date(recoveryStats.recoveryEndTime) - new Date(recoveryStats.recoveryStartTime)) / 1000)\n  : 0;\n\nreturn [{\n  json: {\n    recoveryComplete: true,\n    statistics: recoveryStats,\n    duration: `${duration}s`,\n    successRate: recoveryStats.totalProcessed > 0 \n      ? Math.round((recoveryStats.successful / recoveryStats.totalProcessed) * 100) \n      : 0,\n    completedAt: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "generate-recovery-report",
+      "name": "Generate Recovery Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2200, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-failures",
+              "leftValue": "={{ $json.statistics.failed }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-recovery-failures",
+      "name": "IF Recovery Failures",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2380, 300]
+    },
+    {
+      "parameters": {
+        "fromEmail": "noreply@yourworkflow.com",
+        "toEmail": "admin@yourcompany.com",
+        "subject": "Recovery Workflow Report - {{ $json.statistics.failed }} failures",
+        "emailFormat": "html",
+        "message": "<!DOCTYPE html>\n<html>\n<head>\n  <style>\n    body { font-family: Arial, sans-serif; margin: 20px; }\n    .header { background-color: #ffc107; color: black; padding: 15px; border-radius: 5px; }\n    .stats { background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 10px 0; }\n    .failure { background-color: #f8d7da; padding: 10px; border-left: 4px solid #dc3545; margin: 5px 0; }\n  </style>\n</head>\n<body>\n  <div class=\"header\">\n    <h2>YouTube Recovery Workflow Report</h2>\n  </div>\n  \n  <div class=\"stats\">\n    <h3>Recovery Statistics</h3>\n    <p><strong>Total Items Processed:</strong> {{ $json.statistics.totalProcessed }}</p>\n    <p><strong>Successful Recoveries:</strong> {{ $json.statistics.successful }}</p>\n    <p><strong>Failed Recoveries:</strong> {{ $json.statistics.failed }}</p>\n    <p><strong>Success Rate:</strong> {{ $json.successRate }}%</p>\n    <p><strong>Duration:</strong> {{ $json.duration }}</p>\n  </div>\n  \n  <div class=\"stats\">\n    <h3>Recovery by Strategy</h3>\n    <ul>\n      {% for strategy, count in $json.statistics.byStrategy %}\n        <li>{{ strategy }}: {{ count }} items</li>\n      {% endfor %}\n    </ul>\n  </div>\n  \n  {% if $json.statistics.failed > 0 %}\n  <div class=\"failure\">\n    <h3>Action Required</h3>\n    <p>{{ $json.statistics.failed }} items failed recovery and may require manual intervention.</p>\n    <p>Please review the workflow logs and consider implementing additional recovery strategies.</p>\n  </div>\n  {% endif %}\n</body>\n</html>",
+        "options": {}
+      },
+      "id": "send-recovery-report",
+      "name": "Send Recovery Report",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [2560, 200],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "fromEmail": "noreply@yourworkflow.com",
+        "toEmail": "admin@yourcompany.com",
+        "subject": "Recovery Workflow Completed Successfully",
+        "emailFormat": "html",
+        "message": "<!DOCTYPE html>\n<html>\n<head>\n  <style>\n    body { font-family: Arial, sans-serif; margin: 20px; }\n    .header { background-color: #28a745; color: white; padding: 15px; border-radius: 5px; }\n    .stats { background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 10px 0; }\n  </style>\n</head>\n<body>\n  <div class=\"header\">\n    <h2>Recovery Workflow Completed Successfully</h2>\n  </div>\n  \n  <div class=\"stats\">\n    <h3>Recovery Statistics</h3>\n    <p><strong>Items Recovered:</strong> {{ $json.statistics.successful }} / {{ $json.statistics.totalProcessed }}</p>\n    <p><strong>Success Rate:</strong> {{ $json.successRate }}%</p>\n    <p><strong>Duration:</strong> {{ $json.duration }}</p>\n  </div>\n  \n  <p>All error recovery operations completed successfully!</p>\n</body>\n</html>",
+        "options": {}
+      },
+      "id": "send-success-report",
+      "name": "Send Success Report",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [2560, 400],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {},
+      "id": "recovery-complete",
+      "name": "Recovery Complete",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [2740, 300]
+    },
+    {
+      "parameters": {},
+      "id": "no-recovery-needed",
+      "name": "No Recovery Needed",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [760, 500]
+    }
+  ],
+  "connections": {
+    "Recovery Schedule (4h)": {
+      "main": [
+        [
+          {
+            "node": "Scan for Error Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scan for Error Items": {
+      "main": [
+        [
+          {
+            "node": "Identify Recovery Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Identify Recovery Items": {
+      "main": [
+        [
+          {
+            "node": "IF Has Recovery Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Has Recovery Items": {
+      "main": [
+        [
+          {
+            "node": "Classify Recovery Type",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Recovery Needed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Recovery Type": {
+      "main": [
+        [
+          {
+            "node": "IF Reset & Retry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Reset & Retry": {
+      "main": [
+        [
+          {
+            "node": "Reset Status for Retry",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF API Revalidation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reset Status for Retry": {
+      "main": [
+        [
+          {
+            "node": "Generate Recovery Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF API Revalidation": {
+      "main": [
+        [
+          {
+            "node": "Revalidate YouTube Data",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF Force Update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Revalidate YouTube Data": {
+      "main": [
+        [
+          {
+            "node": "Process Revalidation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Revalidation": {
+      "main": [
+        [
+          {
+            "node": "IF Should Update Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Should Update Data": {
+      "main": [
+        [
+          {
+            "node": "Extract Updated Data",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Update Status Only",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Updated Data": {
+      "main": [
+        [
+          {
+            "node": "Update with Fresh Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update with Fresh Data": {
+      "main": [
+        [
+          {
+            "node": "Generate Recovery Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Status Only": {
+      "main": [
+        [
+          {
+            "node": "Generate Recovery Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Force Update": {
+      "main": [
+        [
+          {
+            "node": "Force Update Complete",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Generate Recovery Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Force Update Complete": {
+      "main": [
+        [
+          {
+            "node": "Generate Recovery Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Recovery Report": {
+      "main": [
+        [
+          {
+            "node": "IF Recovery Failures",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Recovery Failures": {
+      "main": [
+        [
+          {
+            "node": "Send Recovery Report",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Success Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Recovery Report": {
+      "main": [
+        [
+          {
+            "node": "Recovery Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Success Report": {
+      "main": [
+        [
+          {
+            "node": "Recovery Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "staticData": {},
+  "tags": ["recovery", "error-handling", "monitoring", "youtube"],
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "versionId": "1"
+}

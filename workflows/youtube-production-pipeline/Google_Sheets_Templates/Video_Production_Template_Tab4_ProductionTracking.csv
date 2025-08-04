@@ -1,0 +1,7 @@
+Asset_Type,Status,Progress,Assigned_To,Due_Date,Notes
+Script,✅ Complete,100%,AI + Approved,2025-08-01,Enhanced script ready
+Images,🟡 In Progress,35/47 (74%),@john @sarah,2025-08-05,12 images remaining
+Audio,✅ Complete,100%,@mike,2025-08-02,Final audio file ready
+Video_Edit,🟡 In Progress,60%,@john,2025-08-07,Waiting for remaining images
+Thumbnail,✅ Complete,100%,@sarah,2025-08-03,3 variants ready
+SEO_Content,✅ Complete,100%,AI Generated,2025-08-01,Titles and description ready

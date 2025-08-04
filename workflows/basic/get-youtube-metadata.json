@@ -1,0 +1,379 @@
+{
+  "name": "Get YouTube Metadata",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "b1e2f3a4-5c6d-7e8f-9a0b-1c2d3e4f5a6b",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Set YouTube URL here - Edit this line with your YouTube URL\nconst youtubeUrl = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'; // CHANGE THIS URL\n\nif (!youtubeUrl || youtubeUrl === 'https://www.youtube.com/watch?v=dQw4w9WgXcQ') {\n  throw new Error('⚠️ Please edit the \"Set YouTube URL\" node and change the youtubeUrl variable to your desired YouTube video URL');\n}\n\nreturn {\n  json: {\n    youtubeUrl: youtubeUrl,\n    inputMethod: 'hardcoded',\n    timestamp: new Date().toISOString()\n  }\n};"
+      },
+      "id": "a0b1c2d3-4e5f-6a7b-8c9d-0e1f2a3b4c5d",
+      "name": "Set YouTube URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract YouTube video ID from various URL formats\nconst inputData = $input.first().json;\nconst youtubeUrl = inputData.youtubeUrl || inputData.url || inputData.YouTube_URL || '';\n\nif (!youtubeUrl) {\n  throw new Error('Please provide a YouTube URL in the youtubeUrl field');\n}\n\nlet videoId = null;\n\n// Extract video ID from various YouTube URL formats\nconst patterns = [\n  /(?:youtube\\.com\\/watch\\?v=|youtu\\.be\\/|youtube\\.com\\/embed\\/)([^&\\n?#]+)/,\n  /^([a-zA-Z0-9_-]{11})$/ // Direct video ID\n];\n\nfor (const pattern of patterns) {\n  const match = youtubeUrl.match(pattern);\n  if (match) {\n    videoId = match[1];\n    break;\n  }\n}\n\nif (!videoId) {\n  throw new Error(`Invalid YouTube URL format: ${youtubeUrl}`);\n}\n\nconsole.log(`Extracted video ID: ${videoId} from URL: ${youtubeUrl}`);\n\nreturn {\n  json: {\n    originalUrl: youtubeUrl,\n    videoId: videoId\n  }\n};"
+      },
+      "id": "c2d3e4f5-6a7b-8c9d-0e1f-2a3b4c5d6e7f",
+      "name": "Extract Video ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [640, 300]
+    },
+    {
+      "parameters": {
+        "resource": "video",
+        "operation": "get",
+        "videoId": "={{ $json.videoId }}",
+        "part": ["snippet", "statistics"]
+      },
+      "id": "d3e4f5a6-7b8c-9d0e-1f2a-3b4c5d6e7f8a",
+      "name": "Get Video Data",
+      "type": "n8n-nodes-base.youTube",
+      "typeVersion": 1,
+      "position": [840, 300],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.supadata.ai/v1/youtube/transcript?videoId={{ $('Extract Video ID').item.json.videoId }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "YOUR_SUPADATA_API_KEY"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "e4f5a6b7-8c9d-0e1f-2a3b-4c5d6e7f8a9b",
+      "name": "Get Transcript (SupaData)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1040, 300],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process transcript array and prepare for Google Sheets\nconst transcriptData = $input.first().json;\nconst videoInfo = $('Extract Video ID').first().json;\n\nconsole.log('Processing transcript data for Google Sheets...');\n\nlet transcriptItems = [];\n\n// Handle different transcript response formats\nif (transcriptData && !transcriptData.error) {\n  let transcriptArray = [];\n  \n  // Extract transcript array from various possible formats\n  if (Array.isArray(transcriptData.transcript)) {\n    transcriptArray = transcriptData.transcript;\n  } else if (Array.isArray(transcriptData.data)) {\n    transcriptArray = transcriptData.data;\n  } else if (Array.isArray(transcriptData)) {\n    transcriptArray = transcriptData;\n  } else if (transcriptData.transcript && typeof transcriptData.transcript === 'string') {\n    // If transcript is a single string, split it into sentences\n    transcriptArray = transcriptData.transcript.split('. ').map((text, index) => ({\n      text: text + (index < transcriptData.transcript.split('. ').length - 1 ? '.' : ''),\n      start: index * 5, // Estimated timing\n      duration: 5\n    }));\n  }\n  \n  // Process each transcript item\n  transcriptArray.forEach((item, index) => {\n    transcriptItems.push({\n      json: {\n        videoId: videoInfo.videoId,\n        originalUrl: videoInfo.originalUrl,\n        segmentIndex: index + 1,\n        text: item.text || item.content || item,\n        startTime: item.start || item.startTime || item.timestamp || (index * 5),\n        duration: item.duration || item.dur || 5,\n        endTime: (item.start || item.startTime || (index * 5)) + (item.duration || item.dur || 5),\n        extractedAt: new Date().toISOString()\n      }\n    });\n  });\n  \n  console.log(`Processed ${transcriptItems.length} transcript segments`);\n} else {\n  console.warn('No valid transcript data found');\n  // Create a single item indicating no transcript available\n  transcriptItems.push({\n    json: {\n      videoId: videoInfo.videoId,\n      originalUrl: videoInfo.originalUrl,\n      segmentIndex: 1,\n      text: 'Transcript not available',\n      startTime: 0,\n      duration: 0,\n      endTime: 0,\n      extractedAt: new Date().toISOString()\n    }\n  });\n}\n\nreturn transcriptItems;"
+      },
+      "id": "g6h7i8j9-0k1l-2m3n-4o5p-6q7r8s9t0u1v",
+      "name": "Process Transcript Array",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1240, 200]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "sheet",
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Transcripts",
+          "mode": "name"
+        },
+        "columnToMatchOn": "videoId",
+        "valueToMatchOn": "={{ $json.videoId }}",
+        "dataMode": "define",
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "videoId",
+              "fieldValue": "={{ $json.videoId }}"
+            },
+            {
+              "column": "originalUrl",
+              "fieldValue": "={{ $json.originalUrl }}"
+            },
+            {
+              "column": "segmentIndex",
+              "fieldValue": "={{ $json.segmentIndex }}"
+            },
+            {
+              "column": "text",
+              "fieldValue": "={{ $json.text }}"
+            },
+            {
+              "column": "startTime",
+              "fieldValue": "={{ $json.startTime }}"
+            },
+            {
+              "column": "duration",
+              "fieldValue": "={{ $json.duration }}"
+            },
+            {
+              "column": "endTime",
+              "fieldValue": "={{ $json.endTime }}"
+            },
+            {
+              "column": "extractedAt",
+              "fieldValue": "={{ $json.extractedAt }}"
+            }
+          ]
+        }
+      },
+      "id": "h7i8j9k0-1l2m-3n4o-5p6q-7r8s9t0u1v2w",
+      "name": "Save to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [1440, 200],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "keepOnlySet": false,
+        "values": {
+          "string": [
+            {
+              "name": "videoId",
+              "value": "={{ $('Extract Video ID').item.json.videoId }}"
+            },
+            {
+              "name": "originalUrl", 
+              "value": "={{ $('Extract Video ID').item.json.originalUrl }}"
+            },
+            {
+              "name": "title",
+              "value": "={{ $('Get Video Data').item.json.items && $('Get Video Data').item.json.items[0] && $('Get Video Data').item.json.items[0].snippet ? $('Get Video Data').item.json.items[0].snippet.title : 'Title not available' }}"
+            },
+            {
+              "name": "description",
+              "value": "={{ $('Get Video Data').item.json.items && $('Get Video Data').item.json.items[0] && $('Get Video Data').item.json.items[0].snippet ? $('Get Video Data').item.json.items[0].snippet.description : 'Description not available' }}"
+            },
+            {
+              "name": "thumbnail",
+              "value": "={{ $('Get Video Data').item.json.items && $('Get Video Data').item.json.items[0] && $('Get Video Data').item.json.items[0].snippet && $('Get Video Data').item.json.items[0].snippet.thumbnails ? ($('Get Video Data').item.json.items[0].snippet.thumbnails.maxres ? $('Get Video Data').item.json.items[0].snippet.thumbnails.maxres.url : $('Get Video Data').item.json.items[0].snippet.thumbnails.high ? $('Get Video Data').item.json.items[0].snippet.thumbnails.high.url : $('Get Video Data').item.json.items[0].snippet.thumbnails.medium ? $('Get Video Data').item.json.items[0].snippet.thumbnails.medium.url : $('Get Video Data').item.json.items[0].snippet.thumbnails.default.url) : 'https://img.youtube.com/vi/' + $('Extract Video ID').item.json.videoId + '/maxresdefault.jpg' }}"
+            },
+            {
+              "name": "transcript",
+              "value": "={{ $('Process Transcript Array').all().map(item => item.json.text).join(' ') || 'Transcript not available' }}"
+            },
+            {
+              "name": "extractedAt",
+              "value": "={{ $now }}"
+            }
+          ],
+          "number": [
+            {
+              "name": "viewCount",
+              "value": "={{ $('Get Video Data').item.json.items && $('Get Video Data').item.json.items[0] && $('Get Video Data').item.json.items[0].statistics ? parseInt($('Get Video Data').item.json.items[0].statistics.viewCount) : 0 }}"
+            }
+          ],
+          "object": [
+            {
+              "name": "summary",
+              "value": "={{ { hasTitle: ($('Get Video Data').item.json.items && $('Get Video Data').item.json.items[0] && $('Get Video Data').item.json.items[0].snippet && $('Get Video Data').item.json.items[0].snippet.title) ? true : false, hasDescription: ($('Get Video Data').item.json.items && $('Get Video Data').item.json.items[0] && $('Get Video Data').item.json.items[0].snippet && $('Get Video Data').item.json.items[0].snippet.description) ? true : false, hasThumbnail: true, hasViewCount: ($('Get Video Data').item.json.items && $('Get Video Data').item.json.items[0] && $('Get Video Data').item.json.items[0].statistics && $('Get Video Data').item.json.items[0].statistics.viewCount) ? true : false, hasTranscript: ($('Process Transcript Array').all().length > 0 && $('Process Transcript Array').all()[0].json.text !== 'Transcript not available') ? true : false, dataSourcesUsed: (($('Get Video Data').item.json.items && $('Get Video Data').item.json.items[0]) ? 1 : 0) + (($('Process Transcript Array').all().length > 0 && $('Process Transcript Array').all()[0].json.text !== 'Transcript not available') ? 1 : 0) } }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "f5a6b7c8-9d0e-1f2a-3b4c-5d6e7f8a9b0c",
+      "name": "Map YouTube Metadata",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1240, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "extraction-success",
+              "leftValue": "={{ $json.summary.dataSourcesUsed }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a6b7c8d9-0e1f-2a3b-4c5d-6e7f8a9b0c1d",
+      "name": "Check Success",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1440, 300]
+    },
+    {
+      "parameters": {
+        "operation": "log",
+        "message": "=✅ YouTube metadata extracted successfully!\n📹 Title: {{ $json.title }}\n👁️ Views: {{ $json.viewCount.toLocaleString() }}\n🖼️ Has Thumbnail: {{ $json.summary.hasThumbnail ? 'Yes' : 'No' }}\n📝 Has Description: {{ $json.summary.hasDescription ? 'Yes' : 'No' }}\n📄 Has Transcript: {{ $json.summary.hasTranscript ? 'Yes' : 'No' }}\n🔗 Video ID: {{ $json.videoId }}\n🔗 URL: {{ $json.originalUrl }}"
+      },
+      "id": "b7c8d9e0-1f2a-3b4c-5d6e-7f8a9b0c1d2e",
+      "name": "Success Output",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1640, 200]
+    },
+    {
+      "parameters": {
+        "operation": "log",
+        "message": "=⚠️ YouTube metadata extraction failed!\n🔗 Video ID: {{ $json.videoId }}\n📊 Data sources available: {{ $json.summary.dataSourcesUsed }}/2\nPlease check:\n1. YouTube API credentials\n2. SupaData API key\n3. Video ID validity\n4. Network connectivity"
+      },
+      "id": "c8d9e0f1-2a3b-4c5d-6e7f-8a9b0c1d2e3f",
+      "name": "Error Output",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1640, 400]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Set YouTube URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set YouTube URL": {
+      "main": [
+        [
+          {
+            "node": "Extract Video ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Video ID": {
+      "main": [
+        [
+          {
+            "node": "Get Video Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Video Data": {
+      "main": [
+        [
+          {
+            "node": "Get Transcript (SupaData)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Transcript (SupaData)": {
+      "main": [
+        [
+          {
+            "node": "Process Transcript Array",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Transcript Array": {
+      "main": [
+        [
+          {
+            "node": "Save to Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to Google Sheets": {
+      "main": [
+        [
+          {
+            "node": "Map YouTube Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map YouTube Metadata": {
+      "main": [
+        [
+          {
+            "node": "Check Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Success": {
+      "main": [
+        [
+          {
+            "node": "Success Output",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z",
+      "id": "youtube-metadata",
+      "name": "YouTube"
+    },
+    {
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z",
+      "id": "basic-workflow",
+      "name": "Basic"
+    }
+  ],
+  "triggerCount": 0,
+  "updatedAt": "2024-01-01T00:00:00.000Z",
+  "versionId": "1"
+}

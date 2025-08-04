@@ -1,0 +1,10 @@
+Field,Value,Notes
+Video_ID,YT001,Auto-filled from master sheet
+YouTube_URL,https://youtube.com/watch?v=sample,Original source URL
+Original_Title,How to Build a Website,Extracted from YouTube
+Enhanced_Title,Build Your Dream Website in 30 Minutes - Complete 2025 Guide,AI-generated optimized title
+Selected_Concept,Focus on beginner-friendly approach with step-by-step visuals,From master sheet selected idea
+Total_Duration,8:42,Estimated video length
+Sentence_Count,47,Auto-calculated from script breakdown
+Creation_Date,2025-08-01,Auto-filled timestamp
+Status,✅ Script Approved,Current processing status

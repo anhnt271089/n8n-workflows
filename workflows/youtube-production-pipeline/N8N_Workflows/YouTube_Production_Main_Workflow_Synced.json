@@ -1,0 +1,331 @@
+{
+  "name": "youtube-production-pipeline",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes"
+            }
+          ]
+        }
+      },
+      "id": "82deaaf4-2cc3-4f57-b217-5f11868452ec",
+      "name": "Schedule Every 30 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -384,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1yas-xnO7vhj4iZhO7baekkClq6Ca6YYbD3qjOdI53Qg",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Master_Queue",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "29a1bb50-d844-41f2-9851-ae587ce8b9b5",
+      "name": "Read Master Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.6,
+      "position": [
+        -192,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Filter for pending videos and extract video IDs\nconst items = [];\nlet pendingCount = 0;\n\nfor (const item of $input.all()) {\n  const status = item.json['Status'];\n  const youtubeUrl = item.json['YouTube_URL'];\n  \n  if (status === '⏳ Pending' && youtubeUrl) {\n    pendingCount++;\n    \n    // Extract video ID from URL\n    let videoId = null;\n    const patterns = [\n      /(?:youtube\\.com\\/watch\\?v=|youtu\\.be\\/|youtube\\.com\\/embed\\/)([^&\\n?#]+)/,\n      /^([a-zA-Z0-9_-]{11})$/\n    ];\n    \n    for (const pattern of patterns) {\n      const match = youtubeUrl.match(pattern);\n      if (match) {\n        videoId = match[1];\n        break;\n      }\n    }\n    \n    if (videoId) {\n      items.push({\n        json: {\n          ...item.json,\n          videoId: videoId,\n          rowIndex: item.json.__rowIndex || items.length + 2,\n          pendingCount: pendingCount\n        }\n      });\n      \n      // Process only first pending item\n      break;\n    }\n  }\n}\n\nif (items.length === 0) {\n  return [{\n    json: {\n      noPendingVideos: true,\n      message: 'No pending videos to process'\n    }\n  }];\n}\n\nreturn items;"
+      },
+      "id": "26a4e5fa-5187-406d-8789-e97582678ed4",
+      "name": "Filter Pending Videos",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        16,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false
+          },
+          "conditions": [
+            {
+              "id": "has-pending-video",
+              "leftValue": "={{ $json.noPendingVideos }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "notEquals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c99727cd-fa8a-4c6e-8040-de241ad5ea6e",
+      "name": "IF Has Pending Video",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        224,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={{ $json.videoId }}&format=json",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "0f7ae061-47c0-43f9-b89d-c1155abdf1ed",
+      "name": "Get YouTube Metadata",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        416,
+        192
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "resource": "chat",
+        "chatModel": "gpt-4.1",
+        "prompt": {
+          "messages": [
+            {
+              "role": "system",
+              "content": "=Based on the provided video idea, title, and description, suggest 3 distinct and creative content improvement ideas. Each idea should be a different approach to make the content more engaging, valuable, and unique. Focus on enhancing the core concept while maintaining the original intent. Format as:<br>1. [Idea Name]: [Brief description]<br>2. [Idea Name]: [Brief description]<br>3. [Idea Name]: [Brief description]"
+            },
+            {
+              "content": "=Original Video Idea: {{ $('Filter Pending Videos').item.json.Video_Idea || 'Not provided' }}\\nVideo Title: {{ $('Get YouTube Metadata').item.json.title || 'Video Title' }}\\nVideo Description: {{ $('Get YouTube Metadata').item.json.description || 'No description available' }}\\nAuthor: {{ $('Get YouTube Metadata').item.json.author_name || 'Unknown' }}"
+            }
+          ]
+        },
+        "options": {
+          "maxTokens": 500,
+          "temperature": 0.7
+        },
+        "requestOptions": {}
+      },
+      "id": "55e34bb4-6983-4a0c-8aaa-bb7c36cbbcf6",
+      "name": "Generate AI Ideas",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.1,
+      "position": [
+        624,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process YouTube metadata and AI ideas\nconst originalData = $('Filter Pending Videos').item.json;\nconst metadataNode = $('Get YouTube Metadata');\nconst aiIdeasNode = $('Generate AI Ideas');\n\n// Extract metadata safely\nlet title = `Video ${originalData.videoId}`;\nlet thumbnail = `https://img.youtube.com/vi/${originalData.videoId}/maxresdefault.jpg`;\n\nif (metadataNode?.item?.json && !metadataNode.item.json.error) {\n  title = metadataNode.item.json.title || title;\n}\n\n// Parse AI ideas - handle response formats for newer OpenAI node\nlet aiIdeas = ['Idea 1: Default approach', 'Idea 2: Alternative method', 'Idea 3: Creative twist'];\nlet aiResponse = null;\n\n// Debug: Log the full AI response structure\nconsole.log('AI Node Response Structure:', JSON.stringify(aiIdeasNode?.item?.json, null, 2));\n\n// For newer OpenAI node (1.1+) - try multiple response paths\nif (aiIdeasNode?.item?.json?.content) {\n  aiResponse = aiIdeasNode.item.json.content;\n  console.log('Found content in direct path');\n} else if (aiIdeasNode?.item?.json?.choices?.[0]?.message?.content) {\n  aiResponse = aiIdeasNode.item.json.choices[0].message.content;\n  console.log('Found content in choices path');\n} else if (aiIdeasNode?.item?.json?.message?.content) {\n  aiResponse = aiIdeasNode.item.json.message.content;\n  console.log('Found content in message path');\n} else if (aiIdeasNode?.item?.json?.data?.[0]?.message?.content) {\n  aiResponse = aiIdeasNode.item.json.data[0].message.content;\n  console.log('Found content in data path');\n} else {\n  console.log('No content found in any expected path');\n}\n\nconsole.log('Extracted AI Response:', aiResponse);\n\nif (aiResponse) {\n  // Try multiple parsing approaches\n  let ideaMatches = aiResponse.match(/\\\\d+[^\\n]+/g);\n  \n  if (!ideaMatches) {\n    // Try without escaped characters\n    ideaMatches = aiResponse.match(/\\d+[^\\n]+/g);\n  }\n  \n  if (!ideaMatches) {\n    // Try splitting by line breaks and filtering numbered lines\n    const lines = aiResponse.split('\\n').filter(line => /^\\d+/.test(line.trim()));\n    if (lines.length >= 3) {\n      ideaMatches = lines.slice(0, 3);\n    }\n  }\n  \n  console.log('Parsed idea matches:', ideaMatches);\n  \n  if (ideaMatches && ideaMatches.length >= 3) {\n    aiIdeas = ideaMatches.slice(0, 3).map(idea => idea.replace(/^\\d+\\.\\s*/, '').trim());\n    console.log('Final parsed ideas:', aiIdeas);\n  } else {\n    // Fallback: split response into 3 parts\n    const sentences = aiResponse.split(/[.!?]/).filter(s => s.trim().length > 10);\n    if (sentences.length >= 3) {\n      aiIdeas = sentences.slice(0, 3).map((s, i) => `Idea ${i+1}: ${s.trim()}`);\n    }\n  }\n}\n\nreturn [{\n  json: {\n    Video_ID: originalData.Video_ID,\n    YouTube_URL: originalData.YouTube_URL,\n    Video_Idea: originalData.Video_Idea || 'Not provided',\n    Video_Title: title,\n    Status: '🟡 Ideas Ready',\n    AI_Idea_1: aiIdeas[0],\n    AI_Idea_2: aiIdeas[1], \n    AI_Idea_3: aiIdeas[2],\n    Selected_Idea: '',\n    Script_Status: '⏳ Pending',\n    thumbnail: thumbnail,\n    rowIndex: originalData.rowIndex\n  }\n}];"
+      },
+      "id": "d7face4f-1d25-4ec6-8abb-2cae6a2b6e20",
+      "name": "Process Video Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        816,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1yas-xnO7vhj4iZhO7baekkClq6Ca6YYbD3qjOdI53Qg",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Master_Queue",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Video_ID": "={{ $json.Video_ID }}",
+            "Video_Idea": "={{ $json.Video_Idea }}",
+            "YouTube_URL": "={{ $json.YouTube_URL }}",
+            "Video_Title": "={{ $json.Video_Title }}",
+            "Status": "={{ $json.Status }}",
+            "AI_Idea_1": "={{ $json.AI_Idea_1 }}",
+            "AI_Idea_2": "={{ $json.AI_Idea_2 }}",
+            "AI_Idea_3": "={{ $json.AI_Idea_3 }}",
+            "Script_Status": "={{ $json.Script_Status }}"
+          },
+          "matchingColumns": [
+            "Video_ID"
+          ]
+        },
+        "options": {}
+      },
+      "id": "2e47eed8-07fe-40f1-b773-bdbd637cdff7",
+      "name": "Update Master Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.6,
+      "position": [
+        1024,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "789387521",
+        "text": "=🔔 Action Required - YouTube Production\n\n💡 Original Idea: {{ $json.Video_Idea }}\n📺 Video: {{ $json.Video_Title }}\n🆔 ID: {{ $json.Video_ID }}\n📋 Status: Ideas Ready → Please select preferred idea\n\nAI Generated Ideas:\n1️⃣ {{ $json.AI_Idea_1 }}\n\n2️⃣ {{ $json.AI_Idea_2 }}\n\n3️⃣ {{ $json.AI_Idea_3 }}\n\n👆 Next Step: Open master sheet and select Option 1, 2, or 3 in the Selected_Idea column\n\n⏰ Added: {{ $now }}\n\nThis message was sent automatically with n8n",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "74f0752f-68d1-4b5c-8925-4109379130c2",
+      "name": "Telegram - Ideas Ready Notification",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1216,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "789387521",
+        "text": "✅ All Videos Processed!\n\n📊 Queue Status: Empty\n⏰ Last Check: {{ $now }}\n\n📝 Next Steps:\n• Add new YouTube URLs to continue production\n• Review completed videos for publishing\n• Update content calendar\n\n➕ Add videos: Open master sheet to add new URLs",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "4f8c15e6-7597-4ef0-a979-9e4c4cbf6038",
+      "name": "Telegram - Queue Empty Notification",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        416,
+        400
+      ]
+    }
+  ],
+  "connections": {
+    "Schedule Every 30 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Read Master Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Master Sheet": {
+      "main": [
+        [
+          {
+            "node": "Filter Pending Videos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Pending Videos": {
+      "main": [
+        [
+          {
+            "node": "IF Has Pending Video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Has Pending Video": {
+      "main": [
+        [
+          {
+            "node": "Get YouTube Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram - Queue Empty Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get YouTube Metadata": {
+      "main": [
+        [
+          {
+            "node": "Generate AI Ideas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate AI Ideas": {
+      "main": [
+        [
+          {
+            "node": "Process Video Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Video Data": {
+      "main": [
+        [
+          {
+            "node": "Update Master Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Master Sheet": {
+      "main": [
+        [
+          {
+            "node": "Telegram - Ideas Ready Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

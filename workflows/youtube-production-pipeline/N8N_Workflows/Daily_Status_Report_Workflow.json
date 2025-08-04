@@ -1,0 +1,109 @@
+{
+  "name": "YouTube Production - Daily Status Report",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "cronExpression": "0 9 * * *"
+      },
+      "id": "daily-trigger",
+      "name": "Daily Trigger - 9 AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "sheet",
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "1yas-xnO7vhj4iZhO7baekkClq6Ca6YYbD3qjOdI53Qg",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Master_Queue",
+          "mode": "name"
+        },
+        "range": "A:U",
+        "keyRow": 1,
+        "dataStartRow": 2
+      },
+      "id": "read-master-sheet",
+      "name": "Read Master Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.6,
+      "position": [400, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generate comprehensive daily status report\nconst masterData = $input.all();\n\nlet totalVideos = 0;\nlet pending = 0;\nlet ideasReady = 0;\nlet scriptReady = 0;\nlet inProduction = 0;\nlet completed = 0;\nlet overdue = 0;\n\nconst today = new Date();\nconst overdueItems = [];\nconst completedToday = [];\nconst needsAttention = [];\n\n// Helper function to truncate text\nfunction truncateText(text, wordLimit = 10) {\n  if (!text) return 'No title';\n  const words = text.split(' ');\n  if (words.length <= wordLimit) return text;\n  return words.slice(0, wordLimit).join(' ') + '...';\n}\n\nfor (const item of masterData) {\n  totalVideos++;\n  const status = item.json.Status || '';\n  const dueDate = item.json.Due_Date ? new Date(item.json.Due_Date) : null;\n  const priority = item.json.Priority || '';\n  \n  // Count by status\n  switch(status) {\n    case '⏳ Pending':\n      pending++;\n      break;\n    case '🟡 Ideas Ready':\n      ideasReady++;\n      needsAttention.push({\n        video_id: item.json.Video_ID || 'N/A',\n        title: truncateText(item.json.Video_Title),\n        action: 'Select idea from 3 AI options'\n      });\n      break;\n    case '🟠 Script Ready':\n      scriptReady++;\n      needsAttention.push({\n        video_id: item.json.Video_ID || 'N/A',\n        title: truncateText(item.json.Video_Title),\n        action: 'Approve or reject script'\n      });\n      break;\n    case '📁 In Production':\n      inProduction++;\n      if (dueDate && dueDate < today) {\n        overdue++;\n        overdueItems.push({\n          video_id: item.json.Video_ID || 'N/A',\n          title: truncateText(item.json.Video_Title),\n          due_date: item.json.Due_Date,\n          assigned: item.json.Assigned_Editor || 'Unassigned',\n          priority: priority\n        });\n      }\n      break;\n    case '🎬 Complete':\n      completed++;\n      // Check if completed today (simplified check)\n      break;\n  }\n}\n\n// Calculate percentages\nconst completionRate = totalVideos > 0 ? Math.round((completed / totalVideos) * 100) : 0;\nconst productionRate = totalVideos > 0 ? Math.round(((inProduction + completed) / totalVideos) * 100) : 0;\n\nreturn [{\n  json: {\n    totalVideos,\n    pending,\n    ideasReady,\n    scriptReady,\n    inProduction,\n    completed,\n    overdue,\n    completionRate,\n    productionRate,\n    overdueItems,\n    needsAttention,\n    reportDate: today.toISOString().split('T')[0],\n    reportTime: today.toLocaleTimeString()\n  }\n}];"
+      },
+      "id": "generate-status-report",
+      "name": "Generate Status Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [600, 300]
+    },
+    {
+      "parameters": {
+        "chatId": "789387521",
+        "text": "={{ '📊 **DAILY PRODUCTION REPORT** - ' + $json.reportDate + '\\n\\n📈 **PIPELINE OVERVIEW:**\\n• 📹 Total Videos: ' + $json.totalVideos + '\\n• ⏳ Pending Processing: ' + $json.pending + '\\n• 🟡 Ideas Ready: ' + $json.ideasReady + '\\n• 🟠 Script Ready: ' + $json.scriptReady + '\\n• 🔄 In Production: ' + $json.inProduction + '\\n• ✅ Completed: ' + $json.completed + '\\n\\n📊 **PROGRESS METRICS:**\\n• Production Rate: ' + $json.productionRate + '%\\n• Completion Rate: ' + $json.completionRate + '%\\n\\n' + ($json.overdue > 0 ? '🚨 **OVERDUE ITEMS:** ' + $json.overdue + ' videos past due date' : '✅ **NO OVERDUE ITEMS** - All projects on track') + '\\n\\n' + ($json.needsAttention.length > 0 ? '⚠️ **NEEDS ATTENTION:**\\n' + $json.needsAttention.map(item => '• ' + item.video_id + ': ' + item.action).join('\\n') : '👍 **ALL CAUGHT UP** - No immediate actions needed') + '\\n\\n' + ($json.overdue > 0 ? '🔴 **ACTION REQUIRED:** Review overdue assignments' : '🟢 **STATUS:** All projects progressing normally') + '\\n\\n📊 **View Details:** Open master sheet for full breakdown\\n⏰ **Report Generated:** ' + $json.reportTime + '\\n\\nThis message was sent automatically with n8n' }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "send-daily-report",
+      "name": "Send Daily Status Report",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [800, 300]
+    }
+  ],
+  "connections": {
+    "Daily Trigger - 9 AM": {
+      "main": [
+        [
+          {
+            "node": "Read Master Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Master Sheet": {
+      "main": [
+        [
+          {
+            "node": "Generate Status Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Status Report": {
+      "main": [
+        [
+          {
+            "node": "Send Daily Status Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": ["youtube", "daily-report", "status"],
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

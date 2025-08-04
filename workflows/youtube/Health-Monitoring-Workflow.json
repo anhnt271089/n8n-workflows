@@ -1,0 +1,541 @@
+{
+  "name": "YouTube Processing Health Monitor & Alerts",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 30
+            }
+          ]
+        }
+      },
+      "id": "health-check-schedule",
+      "name": "Health Check Schedule (30m)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [220, 400]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "sheet",
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "1q7n6-F7Ji2Vz6U_tS9f7z9hxnPx1bucOeNIO4S5-qZg",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Video",
+          "mode": "name"
+        },
+        "range": "A:F",
+        "keyRow": 1,
+        "dataStartRow": 2
+      },
+      "id": "health-scan-sheet",
+      "name": "Health Scan Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [400, 400],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "url": "https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ&format=json",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "test-youtube-api",
+      "name": "Test YouTube API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [400, 300],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Comprehensive health analysis\nconst now = new Date();\nconst healthReport = {\n  timestamp: now.toISOString(),\n  services: {\n    youtubeAPI: { status: 'unknown', responseTime: null, error: null },\n    googleSheets: { status: 'unknown', responseTime: null, error: null }\n  },\n  dataMetrics: {\n    totalItems: 0,\n    completedItems: 0,\n    errorItems: 0,\n    stuckItems: 0,\n    recentlyUpdated: 0\n  },\n  alerts: [],\n  recommendations: [],\n  overallHealth: 'unknown'\n};\n\n// Analyze YouTube API health\ntry {\n  const youtubeTest = $('Test YouTube API').item.json;\n  if (youtubeTest && !youtubeTest.error && youtubeTest.title) {\n    healthReport.services.youtubeAPI.status = 'healthy';\n    healthReport.services.youtubeAPI.responseTime = '< 10s';\n  } else {\n    healthReport.services.youtubeAPI.status = 'unhealthy';\n    healthReport.services.youtubeAPI.error = youtubeTest.error || 'API call failed';\n    healthReport.alerts.push({\n      severity: 'high',\n      service: 'youtubeAPI',\n      message: 'YouTube API is not responding correctly',\n      action: 'Check API quotas and service status'\n    });\n  }\n} catch (error) {\n  healthReport.services.youtubeAPI.status = 'error';\n  healthReport.services.youtubeAPI.error = error.message;\n  healthReport.alerts.push({\n    severity: 'critical',\n    service: 'youtubeAPI',\n    message: 'YouTube API test failed completely',\n    action: 'Immediate investigation required'\n  });\n}\n\n// Analyze Google Sheets health and data metrics\ntry {\n  const sheetData = $('Health Scan Sheet').all();\n  healthReport.services.googleSheets.status = 'healthy';\n  \n  const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);\n  const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);\n  \n  for (const item of sheetData) {\n    const data = item.json;\n    const status = data.Status;\n    const errorStatus = data.Error_Status;\n    const lastUpdated = data.Last_Updated ? new Date(data.Last_Updated) : null;\n    \n    healthReport.dataMetrics.totalItems++;\n    \n    // Count by status\n    if (status === 'Done') {\n      healthReport.dataMetrics.completedItems++;\n    } else if (errorStatus && errorStatus !== 'OK') {\n      healthReport.dataMetrics.errorItems++;\n    }\n    \n    // Check for stuck items (processing for > 1 hour)\n    if (status === 'Processing' && lastUpdated && (now - lastUpdated) > 60 * 60 * 1000) {\n      healthReport.dataMetrics.stuckItems++;\n    }\n    \n    // Count recently updated items (< 1 hour)\n    if (lastUpdated && lastUpdated > oneHourAgo) {\n      healthReport.dataMetrics.recentlyUpdated++;\n    }\n  }\n  \n  // Generate data-based alerts\n  const completionRate = healthReport.dataMetrics.totalItems > 0 \n    ? (healthReport.dataMetrics.completedItems / healthReport.dataMetrics.totalItems) * 100 \n    : 0;\n  \n  const errorRate = healthReport.dataMetrics.totalItems > 0 \n    ? (healthReport.dataMetrics.errorItems / healthReport.dataMetrics.totalItems) * 100 \n    : 0;\n  \n  if (completionRate < 70) {\n    healthReport.alerts.push({\n      severity: 'medium',\n      service: 'processing',\n      message: `Low completion rate: ${Math.round(completionRate)}%`,\n      action: 'Review processing workflow for bottlenecks'\n    });\n  }\n  \n  if (errorRate > 20) {\n    healthReport.alerts.push({\n      severity: 'high',\n      service: 'processing',\n      message: `High error rate: ${Math.round(errorRate)}%`,\n      action: 'Investigate recurring errors and improve error handling'\n    });\n  }\n  \n  if (healthReport.dataMetrics.stuckItems > 0) {\n    healthReport.alerts.push({\n      severity: 'high',\n      service: 'processing',\n      message: `${healthReport.dataMetrics.stuckItems} items stuck in processing`,\n      action: 'Run recovery workflow to reset stuck items'\n    });\n  }\n  \n  if (healthReport.dataMetrics.recentlyUpdated === 0 && healthReport.dataMetrics.totalItems > healthReport.dataMetrics.completedItems) {\n    healthReport.alerts.push({\n      severity: 'medium',\n      service: 'processing',\n      message: 'No recent processing activity detected',\n      action: 'Check if main workflow is running properly'\n    });\n  }\n  \n} catch (error) {\n  healthReport.services.googleSheets.status = 'error';\n  healthReport.services.googleSheets.error = error.message;\n  healthReport.alerts.push({\n    severity: 'critical',\n    service: 'googleSheets',\n    message: 'Cannot access Google Sheets data',\n    action: 'Check credentials and sheet permissions'\n  });\n}\n\n// Generate recommendations\nif (healthReport.services.youtubeAPI.status === 'healthy' && healthReport.dataMetrics.errorRate > 10) {\n  healthReport.recommendations.push('Consider implementing more aggressive retry strategies');\n}\n\nif (healthReport.dataMetrics.completedItems > 100 && healthReport.dataMetrics.errorItems < 5) {\n  healthReport.recommendations.push('System is performing well - consider scaling up processing');\n}\n\nif (healthReport.alerts.length === 0) {\n  healthReport.recommendations.push('All systems healthy - no immediate action required');\n}\n\n// Determine overall health\nconst criticalAlerts = healthReport.alerts.filter(a => a.severity === 'critical').length;\nconst highAlerts = healthReport.alerts.filter(a => a.severity === 'high').length;\nconst mediumAlerts = healthReport.alerts.filter(a => a.severity === 'medium').length;\n\nif (criticalAlerts > 0) {\n  healthReport.overallHealth = 'critical';\n} else if (highAlerts > 1) {\n  healthReport.overallHealth = 'degraded';\n} else if (highAlerts > 0 || mediumAlerts > 2) {\n  healthReport.overallHealth = 'warning';\n} else {\n  healthReport.overallHealth = 'healthy';\n}\n\nconsole.log(`Health check complete. Overall status: ${healthReport.overallHealth}, Alerts: ${healthReport.alerts.length}`);\n\nreturn [{ json: healthReport }];"
+      },
+      "id": "analyze-system-health",
+      "name": "Analyze System Health",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [580, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-alerts",
+              "leftValue": "={{ $json.alerts.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-has-alerts",
+      "name": "IF Has Alerts",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [760, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "is-critical",
+              "leftValue": "={{ $json.overallHealth }}",
+              "rightValue": "critical",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-critical-health",
+      "name": "IF Critical Health",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [940, 300]
+    },
+    {
+      "parameters": {
+        "fromEmail": "alerts@yourworkflow.com",
+        "toEmail": "admin@yourcompany.com, oncall@yourcompany.com",
+        "subject": "🚨 CRITICAL: YouTube Processing System Health Alert",
+        "emailFormat": "html",
+        "message": "<!DOCTYPE html>\n<html>\n<head>\n  <style>\n    body { font-family: Arial, sans-serif; margin: 20px; }\n    .critical { background-color: #dc3545; color: white; padding: 15px; border-radius: 5px; }\n    .alert { background-color: #f8d7da; padding: 10px; border-left: 4px solid #dc3545; margin: 5px 0; }\n    .metrics { background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 10px 0; }\n    .service-status { padding: 5px; margin: 2px 0; }\n    .healthy { background-color: #d4edda; }\n    .unhealthy { background-color: #f8d7da; }\n    .error { background-color: #f5c6cb; }\n  </style>\n</head>\n<body>\n  <div class=\"critical\">\n    <h2>🚨 CRITICAL SYSTEM HEALTH ALERT</h2>\n    <p><strong>Overall Health:</strong> {{ $json.overallHealth | upper }}</p>\n    <p><strong>Alert Time:</strong> {{ $json.timestamp }}</p>\n  </div>\n  \n  <div class=\"metrics\">\n    <h3>Service Status</h3>\n    <div class=\"service-status {{ $json.services.youtubeAPI.status }}\">\n      <strong>YouTube API:</strong> {{ $json.services.youtubeAPI.status | upper }}\n      {% if $json.services.youtubeAPI.error %}\n        <br>Error: {{ $json.services.youtubeAPI.error }}\n      {% endif %}\n    </div>\n    <div class=\"service-status {{ $json.services.googleSheets.status }}\">\n      <strong>Google Sheets:</strong> {{ $json.services.googleSheets.status | upper }}\n      {% if $json.services.googleSheets.error %}\n        <br>Error: {{ $json.services.googleSheets.error }}\n      {% endif %}\n    </div>\n  </div>\n  \n  <div class=\"metrics\">\n    <h3>Data Metrics</h3>\n    <p><strong>Total Items:</strong> {{ $json.dataMetrics.totalItems }}</p>\n    <p><strong>Completed:</strong> {{ $json.dataMetrics.completedItems }}</p>\n    <p><strong>Errors:</strong> {{ $json.dataMetrics.errorItems }}</p>\n    <p><strong>Stuck in Processing:</strong> {{ $json.dataMetrics.stuckItems }}</p>\n    <p><strong>Recently Updated:</strong> {{ $json.dataMetrics.recentlyUpdated }}</p>\n  </div>\n  \n  <div>\n    <h3>🚨 Active Alerts</h3>\n    {% for alert in $json.alerts %}\n      <div class=\"alert\">\n        <strong>[{{ alert.severity | upper }}] {{ alert.service }}</strong><br>\n        {{ alert.message }}<br>\n        <em>Action: {{ alert.action }}</em>\n      </div>\n    {% endfor %}\n  </div>\n  \n  <p><strong>IMMEDIATE ACTION REQUIRED</strong></p>\n</body>\n</html>",
+        "options": {}
+      },
+      "id": "send-critical-alert",
+      "name": "Send Critical Alert",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [1120, 200],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "is-degraded-warning",
+              "leftValue": "={{ $json.overallHealth }}",
+              "rightValue": "healthy",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-degraded-warning",
+      "name": "IF Degraded/Warning",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [940, 400]
+    },
+    {
+      "parameters": {
+        "fromEmail": "alerts@yourworkflow.com",\n        "toEmail": "admin@yourcompany.com",\n        "subject": "⚠️ YouTube Processing System Health Warning - {{ $json.overallHealth | upper }}",
+        "emailFormat": "html",
+        "message": "<!DOCTYPE html>\n<html>\n<head>\n  <style>\n    body { font-family: Arial, sans-serif; margin: 20px; }\n    .warning { background-color: #ffc107; color: black; padding: 15px; border-radius: 5px; }\n    .degraded { background-color: #fd7e14; color: white; padding: 15px; border-radius: 5px; }\n    .alert { background-color: #fff3cd; padding: 10px; border-left: 4px solid #ffc107; margin: 5px 0; }\n    .metrics { background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 10px 0; }\n    .recommendation { background-color: #d1ecf1; padding: 10px; border-left: 4px solid #17a2b8; margin: 5px 0; }\n  </style>\n</head>\n<body>\n  <div class=\"{{ $json.overallHealth }}\">\n    <h2>⚠️ System Health {{ $json.overallHealth | upper }}</h2>\n    <p><strong>Alert Time:</strong> {{ $json.timestamp }}</p>\n  </div>\n  \n  <div class=\"metrics\">\n    <h3>Quick Summary</h3>\n    <p><strong>YouTube API:</strong> {{ $json.services.youtubeAPI.status | upper }}</p>\n    <p><strong>Google Sheets:</strong> {{ $json.services.googleSheets.status | upper }}</p>\n    <p><strong>Total Items:</strong> {{ $json.dataMetrics.totalItems }} ({{ $json.dataMetrics.completedItems }} completed, {{ $json.dataMetrics.errorItems }} errors)</p>\n  </div>\n  \n  <div>\n    <h3>Alerts Requiring Attention</h3>\n    {% for alert in $json.alerts %}\n      <div class=\"alert\">\n        <strong>[{{ alert.severity | upper }}] {{ alert.service }}</strong><br>\n        {{ alert.message }}<br>\n        <em>Recommended Action: {{ alert.action }}</em>\n      </div>\n    {% endfor %}\n  </div>\n  \n  {% if $json.recommendations.length > 0 %}\n  <div>\n    <h3>Recommendations</h3>\n    {% for rec in $json.recommendations %}\n      <div class=\"recommendation\">{{ rec }}</div>\n    {% endfor %}\n  </div>\n  {% endif %}\n  \n  <p>Please review and address these issues when convenient.</p>\n</body>\n</html>",
+        "options": {}
+      },
+      "id": "send-warning-alert",
+      "name": "Send Warning Alert",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [1120, 400],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Log health check results for trending analysis\nconst healthData = $input.item.json;\n\n// Create a simplified log entry\nconst logEntry = {\n  timestamp: healthData.timestamp,\n  overallHealth: healthData.overallHealth,\n  alertCount: healthData.alerts.length,\n  youtubeAPIStatus: healthData.services.youtubeAPI.status,\n  googleSheetsStatus: healthData.services.googleSheets.status,\n  totalItems: healthData.dataMetrics.totalItems,\n  completedItems: healthData.dataMetrics.completedItems,\n  errorItems: healthData.dataMetrics.errorItems,\n  stuckItems: healthData.dataMetrics.stuckItems,\n  completionRate: healthData.dataMetrics.totalItems > 0 \n    ? Math.round((healthData.dataMetrics.completedItems / healthData.dataMetrics.totalItems) * 100) \n    : 0,\n  errorRate: healthData.dataMetrics.totalItems > 0 \n    ? Math.round((healthData.dataMetrics.errorItems / healthData.dataMetrics.totalItems) * 100) \n    : 0\n};\n\nconsole.log('Health Check Summary:', JSON.stringify(logEntry, null, 2));\n\nreturn [{\n  json: {\n    ...healthData,\n    logEntry: logEntry,\n    healthCheckComplete: true\n  }\n}];"
+      },
+      "id": "log-health-metrics",
+      "name": "Log Health Metrics",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1300, 500]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "should-trigger-recovery",
+              "leftValue": "={{ $json.dataMetrics.stuckItems }}",
+              "rightValue": 2,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],\n          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-should-trigger-recovery",
+      "name": "IF Should Trigger Recovery",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1480, 400]
+    },
+    {
+      "parameters": {
+        "workflowId": "error-recovery-workflow",
+        "options": {}
+      },
+      "id": "trigger-recovery-workflow",
+      "name": "Trigger Recovery Workflow",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [1660, 300],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generate daily health summary (only during business hours)\nconst now = new Date();\nconst hour = now.getHours();\nconst isBusinessHours = hour >= 9 && hour <= 17;\nconst isTopOfHour = now.getMinutes() === 0 || now.getMinutes() === 30;\n\nif (isBusinessHours && isTopOfHour) {\n  const healthData = $input.item.json;\n  \n  return [{\n    json: {\n      ...healthData,\n      shouldSendSummary: true,\n      summaryType: 'hourly_business_hours'\n    }\n  }];\n} else {\n  return [{\n    json: {\n      shouldSendSummary: false,\n      reason: `Outside business hours or not top of hour (${hour}:${now.getMinutes()})`\n    }\n  }];\n}"
+      },
+      "id": "check-summary-schedule",
+      "name": "Check Summary Schedule",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1480, 600]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "should-send-summary",
+              "leftValue": "={{ $json.shouldSendSummary }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-send-summary",
+      "name": "IF Send Summary",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1660, 600]
+    },
+    {
+      "parameters": {
+        "fromEmail": "monitoring@yourworkflow.com",
+        "toEmail": "team@yourcompany.com",
+        "subject": "📊 YouTube Processing Health Summary - {{ $json.overallHealth | upper }}",
+        "emailFormat": "html",
+        "message": "<!DOCTYPE html>\n<html>\n<head>\n  <style>\n    body { font-family: Arial, sans-serif; margin: 20px; }\n    .header { background-color: #007bff; color: white; padding: 15px; border-radius: 5px; }\n    .metrics { background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 10px 0; }\n    .chart { display: flex; justify-content: space-between; margin: 10px 0; }\n    .chart-item { text-align: center; flex: 1; }\n    .progress-bar { background-color: #e9ecef; height: 20px; border-radius: 10px; overflow: hidden; }\n    .progress-fill { height: 100%; background-color: #28a745; }\n  </style>\n</head>\n<body>\n  <div class=\"header\">\n    <h2>📊 YouTube Processing Health Summary</h2>\n    <p><strong>Overall Status:</strong> {{ $json.overallHealth | upper }} | <strong>Time:</strong> {{ $json.timestamp }}</p>\n  </div>\n  \n  <div class=\"metrics\">\n    <h3>Processing Metrics</h3>\n    <div class=\"chart\">\n      <div class=\"chart-item\">\n        <h4>{{ $json.dataMetrics.totalItems }}</h4>\n        <p>Total Items</p>\n      </div>\n      <div class=\"chart-item\">\n        <h4>{{ $json.dataMetrics.completedItems }}</h4>\n        <p>Completed</p>\n      </div>\n      <div class=\"chart-item\">\n        <h4>{{ $json.logEntry.completionRate }}%</h4>\n        <p>Success Rate</p>\n      </div>\n      <div class=\"chart-item\">\n        <h4>{{ $json.dataMetrics.errorItems }}</h4>\n        <p>Errors</p>\n      </div>\n    </div>\n    \n    <div style=\"margin: 20px 0;\">\n      <p><strong>Completion Progress:</strong></p>\n      <div class=\"progress-bar\">\n        <div class=\"progress-fill\" style=\"width: {{ $json.logEntry.completionRate }}%;\"></div>\n      </div>\n      <p style=\"text-align: center; margin-top: 5px;\">{{ $json.logEntry.completionRate }}% Complete</p>\n    </div>\n  </div>\n  \n  <div class=\"metrics\">\n    <h3>Service Health</h3>\n    <p><strong>YouTube API:</strong> <span style=\"color: {% if $json.services.youtubeAPI.status == 'healthy' %}green{% else %}red{% endif %};\">{{ $json.services.youtubeAPI.status | upper }}</span></p>\n    <p><strong>Google Sheets:</strong> <span style=\"color: {% if $json.services.googleSheets.status == 'healthy' %}green{% else %}red{% endif %};\">{{ $json.services.googleSheets.status | upper }}</span></p>\n    <p><strong>Processing Activity:</strong> {{ $json.dataMetrics.recentlyUpdated }} items updated in last hour</p>\n  </div>\n  \n  {% if $json.alerts.length > 0 %}\n  <div class=\"metrics\">\n    <h3>Active Alerts ({{ $json.alerts.length }})</h3>\n    {% for alert in $json.alerts %}\n      <p><strong>[{{ alert.severity | upper }}]</strong> {{ alert.message }}</p>\n    {% endfor %}\n  </div>\n  {% endif %}\n  \n  <p style=\"color: #6c757d; font-size: 0.9em;\">This is an automated health summary. For detailed logs, check the N8N workflow execution history.</p>\n</body>\n</html>",
+        "options": {}
+      },
+      "id": "send-health-summary",
+      "name": "Send Health Summary",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [1840, 600],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {},
+      "id": "health-check-complete",
+      "name": "Health Check Complete",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [2020, 500]
+    },
+    {
+      "parameters": {},
+      "id": "no-alerts",
+      "name": "System Healthy",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [760, 600]
+    }
+  ],
+  "connections": {
+    "Health Check Schedule (30m)": {
+      "main": [
+        [
+          {
+            "node": "Health Scan Sheet",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Test YouTube API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Health Scan Sheet": {
+      "main": [
+        [
+          {
+            "node": "Analyze System Health",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Test YouTube API": {
+      "main": [
+        [
+          {
+            "node": "Analyze System Health",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze System Health": {
+      "main": [
+        [
+          {
+            "node": "IF Has Alerts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Has Alerts": {
+      "main": [
+        [
+          {
+            "node": "IF Critical Health",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "System Healthy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Critical Health": {
+      "main": [
+        [
+          {
+            "node": "Send Critical Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF Degraded/Warning",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Critical Alert": {
+      "main": [
+        [
+          {
+            "node": "Log Health Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Degraded/Warning": {
+      "main": [
+        [
+          {
+            "node": "Send Warning Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Health Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Warning Alert": {
+      "main": [
+        [
+          {
+            "node": "Log Health Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Health Metrics": {
+      "main": [
+        [
+          {
+            "node": "IF Should Trigger Recovery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Should Trigger Recovery": {
+      "main": [
+        [
+          {
+            "node": "Trigger Recovery Workflow",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Check Summary Schedule",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trigger Recovery Workflow": {
+      "main": [
+        [
+          {
+            "node": "Check Summary Schedule",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Summary Schedule": {
+      "main": [
+        [
+          {
+            "node": "IF Send Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Send Summary": {
+      "main": [
+        [
+          {
+            "node": "Send Health Summary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Health Check Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Health Summary": {
+      "main": [
+        [
+          {
+            "node": "Health Check Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "System Healthy": {
+      "main": [
+        [
+          {
+            "node": "Log Health Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": false,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none"
+  },
+  "staticData": {},
+  "tags": ["monitoring", "health-check", "alerts", "youtube"],
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "versionId": "1"
+}
